@@ -111,7 +111,7 @@ struct reqlogger {
     int durationms;
     int vreplays;
     int queuetimems;
-    char fingerprint[16];
+    unsigned char fingerprint[16];
     int have_fingerprint;
     char id[41];
     int have_id;
