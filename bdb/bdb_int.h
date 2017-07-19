@@ -817,9 +817,8 @@ struct bdb_state_tag {
     short keymaxsz; /* size of the keymax buffer */
 
     /* the helper threads (only valid for a "parent" bdb_state) */
-    pthread_t checkpoint_thread;
+    pthread_t checkpoint_trickle_thread;
     pthread_t watcher_thread;
-    pthread_t memp_trickle_thread;
     pthread_t logdelete_thread;
     pthread_t lock_detect_thread;
     pthread_t coherency_lease_thread;
