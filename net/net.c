@@ -212,7 +212,6 @@ static int read_connect_message(SBUF2 *sb, char hostname[], int hostnamel,
                                 int *portnum, netinfo_type *netinfo_ptr);
 static void *accept_thread(void *arg);
 static void *heartbeat_send_thread(void *arg);
-static void *heartbeat_check_thread(void *arg);
 static void *writer_thread(void *args);
 static void *reader_thread(void *arg);
 static void *connect_thread(void *arg);
@@ -1313,6 +1312,33 @@ static int write_message(netinfo_type *netinfo_ptr,
                              WRITE_MSG_NODELAY);
 }
 
+static void re_register_portmux(netinfo_type *netinfo_ptr) {
+    int now;
+
+    if (pthread_mutex_trylock(&(netinfo_ptr->pmuxlk)) == EBUSY)
+        return;
+    /* Re-register under portmux if it's time */
+    if (netinfo_ptr->portmux_register_interval > 0 &&
+        ((now = time_epoch()) - netinfo_ptr->portmux_register_time) >
+        netinfo_ptr->portmux_register_interval) {
+        int myport = portmux_register(
+            netinfo_ptr->app, netinfo_ptr->service, netinfo_ptr->instance);
+        /* What on earth should i do?  Abort maybe?  i'm already using the
+         * old port,
+         * and sockpool has it cached everywhere .. */
+        if (myport != netinfo_ptr->myport && myport > 0) {
+            logmsg(LOGMSG_FATAL, "Portmux returned a different port for %s %s %s?  ",
+                   netinfo_ptr->app, netinfo_ptr->service,
+                   netinfo_ptr->instance);
+            logmsg(LOGMSG_FATAL, "Oldport=%d, returned-port=%d\n",
+                   netinfo_ptr->myport, myport);
+            abort();
+        }
+        netinfo_ptr->portmux_register_time = now;
+    }
+    pthread_mutex_unlock(&(netinfo_ptr->pmuxlk));
+}
+
 static int read_message_header(netinfo_type *netinfo_ptr,
                                host_node_type *host_node_ptr,
                                wire_header_type *wire_header,
@@ -1322,6 +1348,27 @@ static int read_message_header(netinfo_type *netinfo_ptr,
     wire_header_type tmpheader;
     uint8_t *p_buf, *p_buf_end;
     int namelen;
+    int timestamp;
+    int node_timestamp;
+
+    timestamp = time(NULL);
+    rc = sbuf2pollin(host_node_ptr->sb,
+                     netinfo_ptr->heartbeat_check_time * 1000);
+    if (rc == 0) {
+        re_register_portmux(netinfo_ptr);
+
+        if ((host_node_ptr->fd > 0) &&
+            (host_node_ptr->running_user_func == 0)) {
+                host_node_printf(
+                    LOGMSG_WARN,
+                    host_node_ptr,
+                    "%s: no data in %d seconds, killing session\n",
+                    __func__, timestamp - node_timestamp);
+
+
+                return 1;
+        }
+    }
 
     rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, &tmpheader,
                      sizeof(wire_header_type));
@@ -1370,7 +1417,8 @@ static int write_heartbeat(netinfo_type *netinfo_ptr,
     return write_message_int(netinfo_ptr, host_node_ptr, WIRE_HEADER_HEARTBEAT,
                              NULL, 0,
                              WRITE_MSG_HEAD | WRITE_MSG_NODUPE |
-                                 WRITE_MSG_NODELAY | WRITE_MSG_NOLIMIT);
+                             WRITE_MSG_NODELAY | WRITE_MSG_NOLIMIT);
+
 }
 
 /*
@@ -3192,6 +3240,12 @@ static netinfo_type *create_netinfo_int(char myhostname[], int myportnum,
     rc = pthread_mutex_init(&(netinfo_ptr->sanclk), NULL);
     if (rc != 0) {
         logmsg(LOGMSG_ERROR, "create_netinfo: couldn't init sanclk mutex\n");
+        goto fail;
+    }
+
+    rc = pthread_mutex_init(&(netinfo_ptr->pmuxlk), NULL);
+    if (rc != 0) {
+        logmsg(LOGMSG_ERROR, "create_netinfo: couldn't init pmuxlk mutex\n");
         goto fail;
     }
 
@@ -5960,95 +6014,6 @@ void net_set_writefn(SBUF2 *sb, sbuf2writefn writefn)
     watchlist_node->writefn = writefn;
 }
 
-static void *heartbeat_check_thread(void *arg)
-{
-    host_node_type *ptr;
-    netinfo_type *netinfo_ptr;
-    int timestamp;
-    int fd;
-    int node_timestamp;
-    int running_user_func;
-
-    thread_started("net heartbeat check");
-
-    netinfo_ptr = (netinfo_type *)arg;
-    netinfo_ptr->heartbeat_check_thread_arch_tid = getarchtid();
-    logmsg(LOGMSG_INFO, "heartbeat check thread starting.  time=%d.  tid=%d\n",
-            netinfo_ptr->heartbeat_check_time,
-            netinfo_ptr->heartbeat_check_thread_arch_tid);
-
-    if (netinfo_ptr->start_thread_callback)
-        netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
-
-    while (1) {
-        int now;
-        if (netinfo_ptr->exiting)
-            break;
-
-        /* Re-register under portmux if it's time */
-        if (netinfo_ptr->portmux_register_interval > 0 &&
-            ((now = time_epoch()) - netinfo_ptr->portmux_register_time) >
-                netinfo_ptr->portmux_register_interval) {
-            int myport = portmux_register(
-                netinfo_ptr->app, netinfo_ptr->service, netinfo_ptr->instance);
-            /* What on earth should i do?  Abort maybe?  i'm already using the
-             * old port,
-             * and sockpool has it cached everywhere .. */
-            if (myport != netinfo_ptr->myport && myport > 0) {
-                logmsg(LOGMSG_FATAL, "Portmux returned a different port for %s %s %s?  ",
-                        netinfo_ptr->app, netinfo_ptr->service,
-                        netinfo_ptr->instance);
-                logmsg(LOGMSG_FATAL, "Oldport=%d, returned-port=%d\n",
-                        netinfo_ptr->myport, myport);
-                abort();
-            }
-            netinfo_ptr->portmux_register_time = now;
-        }
-
-        Pthread_rwlock_rdlock(&(netinfo_ptr->lock));
-
-        /*fprintf(stderr, "heartbeat thread running\n");*/
-
-        for (ptr = netinfo_ptr->head; ptr != NULL; ptr = ptr->next) {
-            if (ptr->host != netinfo_ptr->myhostname) {
-                /* CLOSE it if we havent recieved a heartbeat from it */
-                timestamp = time(NULL);
-
-                Pthread_mutex_lock(&(ptr->timestamp_lock));
-                fd = ptr->fd;
-                running_user_func = ptr->running_user_func;
-                node_timestamp = ptr->timestamp;
-                Pthread_mutex_unlock(&(ptr->timestamp_lock));
-
-                if ((fd > 0) && (running_user_func == 0)) {
-                    if ((timestamp - node_timestamp) >
-                        netinfo_ptr->heartbeat_check_time) {
-                        host_node_printf(
-                            LOGMSG_WARN,
-                            ptr, "%s: no data in %d seconds, killing session\n",
-                            __func__, timestamp - node_timestamp);
-
-                        close_hostnode(ptr);
-                    }
-                }
-            }
-        }
-
-        Pthread_rwlock_unlock(&(netinfo_ptr->lock));
-
-        if (netinfo_ptr->exiting)
-            break;
-        sleep(1);
-    }
-
-    logmsg(LOGMSG_DEBUG, "heartbeat check thread exiting!\n");
-
-    if (netinfo_ptr->stop_thread_callback)
-        netinfo_ptr->stop_thread_callback(netinfo_ptr->callback_data);
-
-    return NULL;
-}
-
 int net_close_connection(netinfo_type *netinfo_ptr, const char *hostname)
 {
     host_node_type *ptr;
@@ -6213,17 +6178,6 @@ int net_init(netinfo_type *netinfo_ptr)
     if (rc != 0) {
         logmsg(LOGMSG_FATAL, "init_network:couldnt create heartbeat thread - "
                         "rc=%d errno=%d %s exiting\n",
-                rc, errno, strerror(errno));
-        exit(1);
-    }
-
-    /* create heartbeat reader thread */
-    rc = pthread_create(&(netinfo_ptr->heartbeat_check_thread_id),
-                        &(netinfo_ptr->pthread_attr_detach),
-                        heartbeat_check_thread, netinfo_ptr);
-    if (rc != 0) {
-        logmsg(LOGMSG_FATAL, "init_network:couldnt create heartbeat thread - "
-                        "rc=%d, errno=%d %s exiting\n",
                 rc, errno, strerror(errno));
         exit(1);
     }

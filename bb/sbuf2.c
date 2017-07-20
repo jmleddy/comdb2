@@ -483,6 +483,19 @@ int SBUF2_FUNC(sbuf2printfx)(SBUF2 *sb, char *buf, int lbuf, char *fmt, ...)
     return sbuf2puts(sb, buf);
 }
 
+/* Wait for data on this sbuf */
+int SBUF2_FUNC(sbuf2pollin)(SBUF2 *sb, int timeout)
+{
+    int rc;
+    struct pollfd pfd;
+
+    pfd.fd = sb->fd;
+    pfd.events = POLLIN;
+    rc = poll(&pfd, 1, timeout);
+
+    return rc;
+}
+
 /* default read/write functions for sbuf, which implement timeouts and
  * retry on EINTR. */
 static int swrite_unsecure(SBUF2 *sb, const char *cc, int len)
