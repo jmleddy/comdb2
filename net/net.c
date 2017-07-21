@@ -5314,8 +5314,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
 
     Pthread_mutex_unlock(&(host_node_ptr->lock));
 
-    // Why write hello here? writer thread above will say hello, no?
-    /* write_hello(netinfo_ptr, host_node_ptr); */
+    write_hello(netinfo_ptr, host_node_ptr);
 
     if (gbl_verbose_net)
         host_node_printf(LOGMSG_USER, host_node_ptr, "%s: wrote hello\n", __func__);
