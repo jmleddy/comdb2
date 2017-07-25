@@ -38,9 +38,6 @@
 #include <pthread.h>
 #include "thread_util.h"
 
-#ifdef __DGUX__
-#include <siginfo.h>
-#endif
 #ifdef __sun
 #include <siginfo.h>
 #endif
@@ -69,6 +66,7 @@
 #include <plhash.h>
 
 #include "locks.h"
+#include "flibc.h"
 #include "net.h"
 #include "net_int.h"
 
@@ -288,53 +286,6 @@ static const uint8_t *net_connect_message_get(connect_message_type *msg_ptr,
     p_buf = buf_get(&(msg_ptr->my_portnum), sizeof(msg_ptr->my_portnum), p_buf,
                     p_buf_end);
     p_buf = buf_get(&node, sizeof(msg_ptr->my_nodenum), p_buf, p_buf_end);
-
-    return p_buf;
-}
-
-static uint8_t *net_wire_header_put(const wire_header_type *header_ptr,
-                                    uint8_t *p_buf, const uint8_t *p_buf_end)
-{
-    int node = 0;
-    if (p_buf_end < p_buf || NET_WIRE_HEADER_TYPE_LEN > (p_buf_end - p_buf))
-        return NULL;
-
-    p_buf = buf_no_net_put(&(header_ptr->fromhost),
-                           sizeof(header_ptr->fromhost), p_buf, p_buf_end);
-    p_buf = buf_put(&(header_ptr->fromport), sizeof(header_ptr->fromport),
-                    p_buf, p_buf_end);
-    p_buf = buf_put(&node, sizeof(header_ptr->fromnode), p_buf, p_buf_end);
-    p_buf = buf_no_net_put(&(header_ptr->tohost), sizeof(header_ptr->tohost),
-                           p_buf, p_buf_end);
-    p_buf = buf_put(&(header_ptr->toport), sizeof(header_ptr->toport), p_buf,
-                    p_buf_end);
-    p_buf = buf_put(&node, sizeof(header_ptr->tonode), p_buf, p_buf_end);
-    p_buf = buf_put(&(header_ptr->type), sizeof(header_ptr->type), p_buf,
-                    p_buf_end);
-
-    return p_buf;
-}
-
-static const uint8_t *net_wire_header_get(wire_header_type *header_ptr,
-                                          const uint8_t *p_buf,
-                                          const uint8_t *p_buf_end)
-{
-    int node = 0;
-    if (p_buf_end < p_buf || NET_WIRE_HEADER_TYPE_LEN > (p_buf_end - p_buf))
-        return NULL;
-
-    p_buf = buf_no_net_get(&(header_ptr->fromhost),
-                           sizeof(header_ptr->fromhost), p_buf, p_buf_end);
-    p_buf = buf_get(&(header_ptr->fromport), sizeof(header_ptr->fromport),
-                    p_buf, p_buf_end);
-    p_buf = buf_get(&node, sizeof(header_ptr->fromnode), p_buf, p_buf_end);
-    p_buf = buf_no_net_get(&(header_ptr->tohost), sizeof(header_ptr->tohost),
-                           p_buf, p_buf_end);
-    p_buf = buf_get(&(header_ptr->toport), sizeof(header_ptr->toport), p_buf,
-                    p_buf_end);
-    p_buf = buf_get(&node, sizeof(header_ptr->tonode), p_buf, p_buf_end);
-    p_buf = buf_get(&(header_ptr->type), sizeof(header_ptr->type), p_buf,
-                    p_buf_end);
 
     return p_buf;
 }
@@ -1370,16 +1321,19 @@ static int read_message_header(netinfo_type *netinfo_ptr,
         }
     }
 
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, &tmpheader,
+    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, wire_header,
                      sizeof(wire_header_type));
 
     if (rc != sizeof(wire_header_type))
         return 1;
 
-    p_buf = (uint8_t *)&tmpheader;
-    p_buf_end = ((uint8_t *)&tmpheader + sizeof(wire_header_type));
+    wire_header->fromport = ntohl(wire_header->fromport);
+    wire_header->fromnode = ntohl(wire_header->fromnode);
+    wire_header->toport = ntohl(wire_header->toport);
+    wire_header->tonode = ntohl(wire_header->tonode);
+    wire_header->type = ntohl(wire_header->type); 
 
-    net_wire_header_get(wire_header, p_buf, p_buf_end);
+      /*    net_wire_header_get(wire_header, p_buf, p_buf_end);*/
     if (wire_header->fromhost[0] == '.') {
         wire_header->fromhost[HOSTNAME_LEN - 1] = 0;
         namelen = atoi(&wire_header->fromhost[1]);
@@ -4277,39 +4231,15 @@ static void *writer_thread(void *args)
                      * current connection. */
 
                     wire_header = &write_list_ptr->payload.header;
-                    if (netinfo_ptr->myhostname_len >= HOSTNAME_LEN) {
-                        snprintf(tmp_wire_hdr.fromhost,
-                                 sizeof(tmp_wire_hdr.fromhost), ".%d",
-                                 netinfo_ptr->myhostname_len);
-                    } else {
-                        strncpy(tmp_wire_hdr.fromhost, netinfo_ptr->myhostname,
-                                sizeof(tmp_wire_hdr.fromhost));
-                    }
-                    tmp_wire_hdr.fromport = netinfo_ptr->myport;
-                    tmp_wire_hdr.fromnode = 0;
-                    if (host_node_ptr->hostname_len >= HOSTNAME_LEN) {
-                        snprintf(tmp_wire_hdr.tohost,
-                                 sizeof(tmp_wire_hdr.tohost), ".%d",
-                                 host_node_ptr->hostname_len);
-                    } else {
-                        strncpy(tmp_wire_hdr.tohost, host_node_ptr->host,
-                                sizeof(tmp_wire_hdr.tohost));
-                    }
-                    tmp_wire_hdr.toport = host_node_ptr->port;
-                    tmp_wire_hdr.tonode = 0;
-                    tmp_wire_hdr.type = wire_header->type;
-
-                    /* This shouldn't happen.. but for a while it was happening
-                     * due to various races. */
-                    if (tmp_wire_hdr.toport == 0)
-                        host_node_errf(LOGMSG_WARN, host_node_ptr, "PORT IS ZERO! type %d\n",
-                                       tmp_wire_hdr.type);
-
-                    p_buf = (uint8_t *)wire_header;
-                    p_buf_end = ((uint8_t *)wire_header + sizeof(*wire_header));
-
                     /* endianize this */
-                    net_wire_header_put(&tmp_wire_hdr, p_buf, p_buf_end);
+		    wire_header->fromport = htonl(wire_header->fromport);
+		    wire_header->fromnode = htonl(wire_header->fromnode);
+		    wire_header->toport = htonl(wire_header->toport);
+		    wire_header->tonode = htonl(wire_header->tonode);
+		    wire_header->type = htonl(wire_header->type);
+
+		    /*
+		    net_wire_header_put(&tmp_wire_hdr, p_buf, p_buf_end);*/
 
                     rc = write_stream(
                         netinfo_ptr, host_node_ptr, host_node_ptr->sb,
