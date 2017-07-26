@@ -638,7 +638,9 @@ void fill_dbinfo(void *p_response, bdb_state_type *bdb_state)
     CDB2DBINFORESPONSE *dbinfo_response = p_response;
     struct host_node_info nodes[REPMAX];
     int num_nodes = 0, i = 0;
+#ifdef WITH_SSL
     extern ssl_mode gbl_client_ssl_mode;
+#endif
 
     num_nodes = net_get_nodes_info(bdb_state->repinfo->netinfo, REPMAX, nodes);
 
@@ -727,12 +729,14 @@ void fill_dbinfo(void *p_response, bdb_state_type *bdb_state)
 
     dbinfo_response->nodes = nodeinfos;
     dbinfo_response->master = master;
+#ifdef WITH_SSL
     if (gbl_client_ssl_mode <= SSL_UNKNOWN)
         dbinfo_response->has_require_ssl = 0;
     else {
         dbinfo_response->has_require_ssl = 1;
         dbinfo_response->require_ssl = (gbl_client_ssl_mode >= SSL_REQUIRE);
     }
+#endif
 }
 
 static void netinfo_dump(FILE *out, bdb_state_type *bdb_state)

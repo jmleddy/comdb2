@@ -512,7 +512,6 @@ static void shutdown_hostnode_socket(host_node_type *host_node_ptr)
  */
 static void close_hostnode_ll(host_node_type *host_node_ptr)
 {
-    SBUF2 *sb;
     if (host_node_ptr->netinfo_ptr->exiting)
         return;
 
@@ -535,9 +534,11 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
         }
     }
 
+#ifdef WITH_SSL
     sb = host_node_ptr->sb;
     if (sb && sslio_has_ssl(sb))
         sslio_close(sb, 1);
+#endif
 
     /* If we have an fd or sbuf, and no reader or writer thread, then
      * close the socket properly */
@@ -984,8 +985,10 @@ static ssize_t write_stream(netinfo_type *netinfo_ptr,
     return nwrite;
 }
 
+#ifdef WITH_SSL
 extern ssl_mode gbl_rep_ssl_mode;
 extern SSL_CTX *gbl_ssl_ctx;
+#endif
 static int read_connect_message(SBUF2 *sb, char hostname[], int hostnamel,
                                 int *portnum, netinfo_type *netinfo_ptr)
 {
@@ -1072,6 +1075,7 @@ static int read_connect_message(SBUF2 *sb, char hostname[], int hostnamel,
     strncpy(hostname, my_hostname, hostnamel);
     *portnum = connect_message.my_portnum;
 
+#ifdef WITH_SSL
     if (connect_message.ssl) {
         if (gbl_rep_ssl_mode < SSL_ALLOW) {
             /* Reject if mis-configured. */
@@ -1090,6 +1094,7 @@ static int read_connect_message(SBUF2 *sb, char hostname[], int hostnamel,
                "Replicant SSL connections are required.\n");
         return -1;
     }
+#endif
 
     return 0;
 }
@@ -1157,8 +1162,10 @@ static int write_connect_message(netinfo_type *netinfo_ptr,
                 sizeof(connect_message.to_hostname));
     }
     connect_message.to_portnum = host_node_ptr->port;
+#ifdef WITH_SSL
     /* It was `to_nodenum`. */
     connect_message.ssl = (gbl_rep_ssl_mode >= SSL_REQUIRE);
+#endif
 
     if (netinfo_ptr->myhostname_len >= HOSTNAME_LEN) {
         snprintf(connect_message.my_hostname,
@@ -1211,12 +1218,14 @@ static int write_connect_message(netinfo_type *netinfo_ptr,
         }
     }
 
+#ifdef WITH_SSL
     if (gbl_rep_ssl_mode >= SSL_REQUIRE) {
         sbuf2flush(sb);
         if (sslio_connect(sb, gbl_ssl_ctx,
                           gbl_rep_ssl_mode, NULL, 0) != 1)
             return 1;
     }
+#endif
 
     return 0;
 }

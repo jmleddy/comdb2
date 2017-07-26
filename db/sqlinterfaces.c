@@ -7177,6 +7177,7 @@ retry_read:
     hdr.compression = ntohl(hdr.compression);
     hdr.length = ntohl(hdr.length);
 
+#ifdef HAVE_SSL
     if (hdr.type == FSQL_SSLCONN) {
         /* If client requires SSL and we haven't done that,
            do SSL_accept() now. handle_newsql_requests()
@@ -7214,7 +7215,9 @@ retry_read:
         }
 
         goto retry_read;
-    } else if (hdr.type == FSQL_RESET) { /* Reset from sockpool.*/
+    } else
+#endif
+    if (hdr.type == FSQL_RESET) { /* Reset from sockpool.*/
         reset_clnt(clnt, sb, 0);
         clnt->tzname[0] = '\0';
         clnt->osql.count_changes = 1;
@@ -7345,6 +7348,7 @@ retry_read:
 
     free(p);
 
+#ifdef HAVE_SSL
     /* Do security check before we return. We do it only after
        the query has been unpacked so that we know whether
        it is a new client (new clients have SSL feature).
@@ -7381,6 +7385,7 @@ retry_read:
         }
         return NULL;
     }
+#endif
 
     return query;
 }
