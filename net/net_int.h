@@ -140,11 +140,9 @@ struct host_node_tag {
     struct host_node_tag *next;
     int have_connect_thread;
     int have_reader_thread;
-    int have_writer_thread;
     int state_flags;
     pthread_t connect_thread_id;
     pthread_t reader_thread_id;
-    pthread_t writer_thread_id;
     arch_tid connect_thread_arch_tid;
     arch_tid reader_thread_arch_tid;
     arch_tid writer_thread_arch_tid;
@@ -157,7 +155,6 @@ struct host_node_tag {
     pthread_mutex_t wait_mutex;
     int timestamp;
     pthread_mutex_t write_lock;
-    pthread_cond_t write_wakeup;
     int got_hello;
     int running_user_func; /* This is a count of how many are running */
 

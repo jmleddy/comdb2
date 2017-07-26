@@ -59,8 +59,6 @@ static void basic_node_data(struct host_node_tag *ptr, FILE *out)
         fprintf(out, " cnt_thd");
     if (ptr->have_reader_thread)
         fprintf(out, " rd_thd");
-    if (ptr->have_writer_thread)
-        fprintf(out, " wr_thd");
     if (ptr->state_flags & NET_STATE_DECOM)
         fprintf(out, " decom");
     if (ptr->state_flags & NET_STATE_CLOSED)

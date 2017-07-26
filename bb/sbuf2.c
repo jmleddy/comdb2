@@ -743,7 +743,7 @@ SBUF2 *SBUF2_FUNC(sbuf2open)(int fd, int flags)
         sb->ungetc_buf_len = 0;
         memset(sb->ungetc_buf, EOF, SBUF2UNGETC_BUF_MAX);
 #endif
-        sb->write = swrite; /*default writer/reader*/
+        sb->write = sbuf2unbufferedwrite; /*default writer/reader*/
         sb->read = sread;
 #if SBUF2_SERVER
         comdb2ma alloc = comdb2ma_create(0, 0, "sbuf2", 0);
