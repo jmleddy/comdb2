@@ -14,6 +14,8 @@
    limitations under the License.
  */
 
+#ifdef WITH_SSL
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,7 +61,7 @@ struct peer_info {
 #  define UNLOCK(arg)
 #endif
 
-/* Given an fd, work out which machine the connection is from.
+/* Given an buf, work out which machine the connection is from.
    Cache hostname info only in server mode. */
 char *SBUF2_FUNC(get_origin_mach_by_buf)(SBUF2 *sb)
 {
@@ -704,3 +706,5 @@ int SBUF2_FUNC(sslio_close)(SBUF2 *sb, int reuse)
     sb->ssl = NULL;
     return rc;
 }
+
+#endif WITH_SSL

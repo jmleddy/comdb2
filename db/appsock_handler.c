@@ -905,6 +905,147 @@ void appsock_handler_start(struct dbenv *dbenv, SBUF2 *sb)
     }
 }
 
+static pthread_mutex_t peer_lk = PTHREAD_MUTEX_INITIALIZER;
+static hash_t *peer_hash = NULL;
+struct peer_info {
+    /* Key (must come first in struct) */
+    struct in_addr addr;
+    short family;
+    /* (don't forget to bzero the key area as the member fields may not
+     * be aligned) */
+
+    /* Data */
+    char *host;
+};
+
+/* Given an fd, work out which machine the connection is from. */
+char *get_origin_mach_by_fd(int fd)
+{
+    char *funcname;
+    struct sockaddr_in peeraddr;
+    int len = sizeof(peeraddr);
+    struct peer_info *info;
+    struct peer_info key;
+
+    if (fd == -1)
+        return "???";
+
+    bzero(&peeraddr, sizeof(peeraddr));
+    if (getpeername(fd, (struct sockaddr *)&peeraddr, &len) < 0) {
+        logmsg(LOGMSG_ERROR, "%s:getpeername failed fd %d: %d %s\n", __func__, fd,
+                errno, strerror(errno));
+        return "???";
+    }
+
+    bzero(&key, offsetof(struct peer_info, host));
+    memcpy(&key.addr, &peeraddr.sin_addr, sizeof(key.addr));
+    key.family = peeraddr.sin_family;
+
+    LOCK(&peer_lk)
+    {
+        if (!peer_hash) {
+            peer_hash = hash_init(offsetof(struct peer_info, host));
+            if (!peer_hash) {
+                logmsg(LOGMSG_ERROR, "%s:hash_init failed\n", __func__);
+                errUNLOCK(&peer_lk);
+                return "???";
+            }
+        }
+
+        info = hash_find(peer_hash, &key);
+        if (!info) {
+            /* Do a slow lookup of this internet address in the host database
+             * to get a hostname, and then search the bigsnd node list to
+             * map this to a node number. */
+            struct hostent *hp = NULL, rslt;
+            char hnm[256] = {0};
+            char *h_name = NULL;
+            int node, rc;
+            int error_num = 0;
+            int goodrc = 0;
+
+#ifdef _LINUX_SOURCE
+            funcname = "getnameinfo";
+            rc = getnameinfo((struct sockaddr *)&peeraddr, sizeof(peeraddr),
+                             hnm, sizeof(hnm), NULL, 0, 0);
+
+            if (0 == rc) {
+                goodrc = 1;
+                h_name = hnm;
+            } else {
+                error_num = errno;
+            }
+#else
+            funcname = "getipnodebyaddr";
+            hp = getipnodebyaddr(&peeraddr.sin_addr, sizeof(peeraddr.sin_addr),
+                                 peeraddr.sin_family, &error_num);
+            if (hp) {
+                goodrc = 1;
+                h_name = hp->h_name;
+            }
+#endif
+
+            char *host;
+
+            if (0 == goodrc) {
+                char addrstr[64] = "";
+                inet_ntop(peeraddr.sin_family, &peeraddr.sin_addr, addrstr,
+                          sizeof(addrstr));
+                logmsg(LOGMSG_ERROR, "%s:%s failed fd %d (%s): error_num %d",
+                        __func__, funcname, fd, addrstr, error_num);
+                switch (error_num) {
+                case HOST_NOT_FOUND:
+                    logmsg(LOGMSG_ERROR, " HOST_NOT_FOUND\n");
+                    break;
+                case NO_DATA:
+                    logmsg(LOGMSG_ERROR, " NO_DATA\n");
+                    break;
+                case NO_RECOVERY:
+                    logmsg(LOGMSG_ERROR, " NO_RECOVERY\n");
+                    break;
+                case TRY_AGAIN:
+                    logmsg(LOGMSG_ERROR, " TRY_AGAIN\n");
+                    break;
+                default:
+                    logmsg(LOGMSG_ERROR, " ???\n");
+                    break;
+                }
+                host = strdup(addrstr);
+            } else {
+                host = strdup(h_name);
+            }
+
+            info = calloc(1, sizeof(struct peer_info));
+            if (!info) {
+                errUNLOCK(&peer_lk);
+                logmsg(LOGMSG_ERROR, "%s: out of memory\n", __func__);
+                return "???";
+            }
+
+            memcpy(info, &key, sizeof(key));
+            info->host = host;
+            if (hash_add(peer_hash, info) != 0) {
+                errUNLOCK(&peer_lk);
+                logmsg(LOGMSG_ERROR, "%s: hash_add failed\n", __func__);
+                free(info);
+                return host;
+            }
+        }
+    }
+    UNLOCK(&peer_lk);
+
+    if (info)
+        return info->host;
+    return "???";
+}
+
+#ifndef SSL
+char *get_origin_mach_by_buf(SBUF2 *sb)
+{
+    return get_origin_mach_by_fd(sbuf2fileno(sb));
+}
+#endif
+
 static int set_genid48(int enable)
 {
     scdone_t llog;

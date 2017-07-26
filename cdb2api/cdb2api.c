@@ -59,11 +59,7 @@ static int CDB2_CONNECT_TIMEOUT = 100;
 static int COMDB2DB_TIMEOUT = 500;
 static int cdb2_tcpbufsz = 0;
 
-#ifndef WITH_SSL
-#  define WITH_SSL 1
-#endif
-
-#if WITH_SSL
+#ifdef WITH_SSL
 static ssl_mode cdb2_c_ssl_mode = SSL_ALLOW;
 static char cdb2_sslcertpath[PATH_MAX];
 static char cdb2_sslcert[PATH_MAX];
