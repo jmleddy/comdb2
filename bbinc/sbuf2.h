@@ -192,8 +192,11 @@ int SBUF2_FUNC(sbuf2unbufferedread)(SBUF2 *sb, char *cc, int len);
 int SBUF2_FUNC(sbuf2unbufferedwrite)(SBUF2 *sb, const char *cc, int len);
 #define sbuf2unbufferedwrite SBUF2_FUNC(sbuf2unbufferedwrite)
 
-#ifndef WITH_SSL
-#  define WITH_SSL 1
+/* Include this one more broadly so we can use get_origin_mach_by_fd */
+char *SBUF2_FUNC(get_origin_mach_by_buf)(SBUF2 *);
+#define get_origin_mach_by_buf SBUF2_FUNC(get_origin_mach_by_buf)
+
+#ifdef WITH_SSL
 /* SSL routines. */
 #  include <ssl_support.h>
 #  include <ssl_io.h>

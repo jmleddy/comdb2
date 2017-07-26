@@ -2911,6 +2911,9 @@ struct rawnodestats *get_raw_node_stats(char *host);
 
 struct reqlogger *reqlog_alloc(void);
 int peer_dropped_connection(struct sqlclntstate *clnt);
+#ifndef WITH_SSL
+char *get_origin_mach_by_buf(SBUF2 *sbuf);
+#endif
 
 void osql_set_replay(const char *file, int line, struct sqlclntstate *clnt,
                      int replay);
@@ -3365,7 +3368,6 @@ int vtag_to_ondisk(struct dbtable *db, uint8_t *rec, int *len, uint8_t ver,
                    unsigned long long genid);
 int vtag_to_ondisk_vermap(struct dbtable *db, uint8_t *rec, int *len, uint8_t ver);
 
-int get_origin_mach(char *origin);
 void comdb2_die(int abort);
 int access_control_check_read(struct ireq *iq, tran_type *tran, int *bdberr);
 int access_control_check_write(struct ireq *iq, tran_type *tran, int *bdberr);

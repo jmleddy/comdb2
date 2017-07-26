@@ -7209,6 +7209,7 @@ retry_read:
     hdr.compression = ntohl(hdr.compression);
     hdr.length = ntohl(hdr.length);
 
+#ifdef HAVE_SSL
     if (hdr.type == FSQL_SSLCONN) {
         /* If client requires SSL and we haven't done that,
            do SSL_accept() now. handle_newsql_requests()
@@ -7246,8 +7247,9 @@ retry_read:
         }
 
         goto retry_read;
-    } else if (hdr.type == FSQL_RESET) { /* Reset from sockpool.*/
-
+    } else
+#endif
+    if (hdr.type == FSQL_RESET) { /* Reset from sockpool.*/
         if (clnt->ctrl_sqlengine == SQLENG_INTRANS_STATE) {
             /* Discard the pending transaction when receiving RESET from the
                sockpool. We reach here if
@@ -7386,6 +7388,7 @@ retry_read:
         goto retry_read;
     }
 
+#ifdef HAVE_SSL
     /* Do security check before we return. We do it only after
        the query has been unpacked so that we know whether
        it is a new client (new clients have SSL feature).
@@ -7424,6 +7427,7 @@ retry_read:
         cdb2__query__free_unpacked(query, &pb_alloc);
         return NULL;
     }
+#endif
 
     return query;
 }
