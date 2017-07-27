@@ -992,7 +992,7 @@ int berkdb_send_rtn(DB_ENV *dbenv, const DBT *control, const DBT *rec,
                     if (bdb_state->attr->net_inorder_logputs) {
                         rc = net_send_inorder(bdb_state->repinfo->netinfo,
                                               hostlist[i], USER_TYPE_BERKDB_REP,
-                                              buf, bufsz, nodelay);
+                                              buf, bufsz);
                     } else {
                         rc =
                             net_send(bdb_state->repinfo->netinfo, hostlist[i],

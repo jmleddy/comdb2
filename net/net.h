@@ -103,10 +103,8 @@ int net_send(netinfo_type *netinfo,
 int net_send_nodrop(netinfo_type *netinfo, const char *to_host, int usertype,
                     void *dta, int dtalen, int nodelay);
 
-int net_send_inorder(netinfo_type *netinfo,
-                     const char *to_host, /* send to this node number */
-                     /*host_node_type *host_node, */
-                     int usertype, void *dta, int dtalen, int nodelay);
+int net_send_inorder(netinfo_type *netinfo, const char *to_host,
+                     int usertype, void *dta, int flags);
 
 /* register your callback routine that will be called when
    user messages of type "usertype" are recieved */

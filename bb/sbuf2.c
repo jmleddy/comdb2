@@ -535,6 +535,16 @@ static int swrite(SBUF2 *sb, const char *cc, int len)
     return rc;
 }
 
+#if !WITH_SSL
+int SBUF2_FUNC(sbuf2writev)(SBUF2* sb, const struct iovec *iov, int iovcnt)
+{
+    struct msghdr msg;
+    msg.msg_iov = (struct iovec*) iov;
+    msg.msg_iovlen = iovcnt;
+    return sendmsg(sb->fd, &msg, 0);
+}
+#endif
+
 int SBUF2_FUNC(sbuf2unbufferedwrite)(SBUF2 *sb, const char *cc, int len)
 {
     int n, ioerr;
@@ -743,7 +753,7 @@ SBUF2 *SBUF2_FUNC(sbuf2open)(int fd, int flags)
         sb->ungetc_buf_len = 0;
         memset(sb->ungetc_buf, EOF, SBUF2UNGETC_BUF_MAX);
 #endif
-        sb->write = sbuf2unbufferedwrite; /*default writer/reader*/
+        sb->write = swrite; /*default writer/reader*/
         sb->read = sread;
 #if SBUF2_SERVER
         comdb2ma alloc = comdb2ma_create(0, 0, "sbuf2", 0);
