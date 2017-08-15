@@ -571,20 +571,6 @@ static int write_list(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
         }
     }
 
-    /* Although generic, this logic was really added to ensure that we
-     * don't double enque heartbeat messages.  Not sure how much this really
-     * happens in practice. */
-    if ((flags & WRITE_MSG_NODUPE) != 0 && host_node_ptr->write_head) {
-        const wire_header_type *newitem = headptr;
-        wire_header_type *headitem = &host_node_ptr->write_head->payload.header;
-        if (newitem->type == headitem->type) {
-            /* Dedupe this item */
-            host_node_ptr->dedupe_count++;
-            rc = 0;
-            goto out;
-        }
-    }
-
     Pthread_mutex_unlock(&(host_node_ptr->enquelk));
 
     for (datasz = 0, ii = 0; ii < iovcount; ii++) {
@@ -868,18 +854,6 @@ static int timespec_cmp(struct timespec *x, struct timespec *y)
     return 0;
 }
 
-void comdb2_nanosleep(struct timespec *req)
-{
-    struct timeval before, now, need, elapsed;
-    timespec_to_timeval(req, &need);
-    gettimeofday(&before, NULL);
-    do {
-        sched_yield();
-        gettimeofday(&now, NULL);
-        timeval_diff(&before, &now, &elapsed);
-    } while (timeval_cmp(&elapsed, &need) < 0);
-}
-
 void net_delay(const char *host)
 {
     int delay = debug_switch_net_delay();
@@ -900,13 +874,7 @@ void net_delay(const char *host)
         req.tv_sec = sec;
         req.tv_nsec = delay * 100000; // 0.1 ms -> ns
 
-#ifdef _LINUX_SOURCE
-        // spin for delay < 10ms
-        if (delay < 100)
-            comdb2_nanosleep(&req);
-        else
-#endif
-            nanosleep(&req, NULL);
+        nanosleep(&req, NULL);
         ++net_delayed;
     }
 }
