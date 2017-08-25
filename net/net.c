@@ -1024,11 +1024,7 @@ static int empty_write_list(host_node_type *host_node_ptr)
             pool_relablk(host_node_ptr->write_pool, nxt);
             Pthread_mutex_unlock(&(host_node_ptr->pool_lock));
         } else {
-#ifdef PER_THREAD_MALLOC
             free(nxt);
-#else
-            comdb2_free(nxt);
-#endif
         }
 
         nxt = ptr;
@@ -1201,13 +1197,8 @@ static int write_message_int(netinfo_type *netinfo_ptr,
     /* Add this message to our linked list to send. */
     rc = write_list(netinfo_ptr, host_node_ptr, new_iov, iovcount,
                     flags);
-#ifdef PER_THREAD_MALLOC
     free(wire_header);
     free(new_iov);
-#else
-    comdb2_free(wire_header);    
-    comdb2_free(new_iov);
-#endif
     if (rc < 0) {
         if (rc == -1) {
             logmsg(LOGMSG_ERROR, "%s: got reallybad failure?\n", __func__);
@@ -4180,11 +4171,7 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
                     pool_relablk(host_node_ptr->write_pool, write_list_back);
                     Pthread_mutex_unlock(&(host_node_ptr->pool_lock));
                 } else {
-#ifdef PER_THREAD_MALLOC
                     free(write_list_back);
-#else
-                    comdb2_free(write_list_back);
-#endif
                 }
             }
             /* we seem to set nodelay on virtually every message.  try to get
