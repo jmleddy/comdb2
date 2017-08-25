@@ -191,12 +191,8 @@ static sanc_node_type *add_to_sanctioned_nolock(netinfo_type *netinfo_ptr,
 static int verify_port(netinfo_type *netinfo_ptr, int alleged_port,
                        char *hostname);
 static int process_hello_common(netinfo_type *netinfo_ptr,
-                                host_node_type *host_node_ptr,
-                                int look_for_magic);
-static int process_hello(netinfo_type *netinfo_ptr,
-                         host_node_type *host_node_ptr);
-static int process_hello_reply(netinfo_type *netinfo_ptr,
-                               host_node_type *host_node_ptr);
+                                host_node_type *host_node_ptr);
+static int process_hello(read_data *read_data_ptr);
 /* '_ll' lockless -- the caller should be holding the netinfo_ptr->lock */
 static host_node_type *get_host_node_by_name_ll(netinfo_type *netinfo_ptr,
                                                 const char name[]);
@@ -1161,30 +1157,37 @@ static int write_message_int(netinfo_type *netinfo_ptr,
 #endif
     
     /*
-     * Fill in these details now
+     * Fill in the port details now
      */
-    strncpy(wire_header->fromhost, netinfo_ptr->myhostname,
-       sizeof(wire_header->fromhost));
     wire_header->fromport = htonl(netinfo_ptr->myport);
-    /* 0 because R7 */
-    wire_header->fromnode = 0;
-    strncpy(wire_header->tohost, host_node_ptr->host,
-       sizeof(wire_header->tohost));
     wire_header->toport = htonl(host_node_ptr->port);
-    wire_header->tonode = 0;
     wire_header->type = htonl(type);
 
     new_iov[0].iov_base = wire_header;
     new_iov[0].iov_len = sizeof(*wire_header);
     header_iovcount++;
 
-    /* if we have long hostnames, add them to the iov */
-    if (netinfo_ptr->myhostname_len >= HOSTNAME_LEN) {
+    /* If we have short hostnames, fill in wire_header */
+    if (netinfo_ptr->myhostname_len < HOSTNAME_LEN) {
+        strncpy(wire_header->fromhost, netinfo_ptr->myhostname,
+                sizeof(wire_header->fromhost));
+    } else { /* We have long hostnames add to the iov */
+        strncpy(wire_header->fromhost, ".", 1);
+        wire_header->fromnode = htonl(strlen(netinfo_ptr->myhostname));
+
         new_iov[header_iovcount].iov_base = netinfo_ptr->myhostname;
         new_iov[header_iovcount].iov_len = netinfo_ptr->myhostname_len;
         header_iovcount++;
     }
-    if (host_node_ptr->hostname_len >= HOSTNAME_LEN) {
+    if (host_node_ptr->hostname_len < HOSTNAME_LEN) {
+        strncpy(wire_header->tohost, host_node_ptr->host,
+                sizeof(wire_header->tohost));
+    } else {
+        strncpy(wire_header->tohost, ".", 1);
+        wire_header->tonode = htonl(strlen(host_node_ptr->host));
+
+        strncpy(wire_header->fromhost, netinfo_ptr->myhostname,
+                sizeof(wire_header->fromhost));
         new_iov[header_iovcount].iov_base = host_node_ptr->host;
         new_iov[header_iovcount].iov_len = host_node_ptr->hostname_len;
         header_iovcount++;
@@ -1272,12 +1275,12 @@ static void re_register_portmux(netinfo_type *netinfo_ptr) {
 
 static int read_message_header(netinfo_type *netinfo_ptr,
                                host_node_type *host_node_ptr,
-                               wire_header_type *wire_header,
+                               wire_header_type **wire_header,
                                char fromhost[256], char tohost[256])
 {
     int rc;
-    wire_header_type tmpheader;
     uint8_t *p_buf, *p_buf_end;
+    wire_header_type *tmpheader;
     int namelen;
     int timestamp;
     int node_timestamp;
@@ -1300,22 +1303,28 @@ static int read_message_header(netinfo_type *netinfo_ptr,
                 return 1;
         }
     }
+#ifdef PER_THREAD_MALLOC
+    tmpheader = malloc(sizeof(wire_header_type));
+#else
+    tmpheader = comdb2_malloc(sizeof(wire_header_type));
+#endif
+    *wire_header = tmpheader;
 
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, wire_header,
-                     sizeof(wire_header_type));
+    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb,
+                     tmpheader, sizeof(*tmpheader));
 
     if (rc != sizeof(wire_header_type))
         return 1;
 
-    wire_header->fromport = ntohl(wire_header->fromport);
-    wire_header->fromnode = ntohl(wire_header->fromnode);
-    wire_header->toport = ntohl(wire_header->toport);
-    wire_header->tonode = ntohl(wire_header->tonode);
-    wire_header->type = ntohl(wire_header->type); 
+    tmpheader->fromport = ntohl(tmpheader->fromport);
+    tmpheader->fromnode = ntohl(tmpheader->fromnode);
+    tmpheader->toport = ntohl(tmpheader->toport);
+    tmpheader->tonode = ntohl(tmpheader->tonode);
+    tmpheader->type = ntohl(tmpheader->type); 
 
-    if (wire_header->fromhost[0] == '.') {
-        wire_header->fromhost[HOSTNAME_LEN - 1] = 0;
-        namelen = atoi(&wire_header->fromhost[1]);
+    if (tmpheader->fromhost[0] == '.') {
+        tmpheader->fromhost[HOSTNAME_LEN - 1] = 0;
+        namelen = atoi(&tmpheader->fromhost[1]);
         if (namelen < 1 || namelen > 256)
             return 1;
         rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb,
@@ -1323,12 +1332,12 @@ static int read_message_header(netinfo_type *netinfo_ptr,
         if (rc != namelen)
             return 1;
     } else {
-        strncpy(fromhost, wire_header->fromhost, HOSTNAME_LEN);
+        strncpy(fromhost, tmpheader->fromhost, HOSTNAME_LEN);
         fromhost[HOSTNAME_LEN - 1] = 0;
     }
-    if (wire_header->tohost[0] == '.') {
-        wire_header->tohost[HOSTNAME_LEN - 1] = 0;
-        namelen = atoi(&wire_header->tohost[1]);
+    if (tmpheader->tohost[0] == '.') {
+        tmpheader->tohost[HOSTNAME_LEN - 1] = 0;
+        namelen = atoi(&tmpheader->tohost[1]);
         if (namelen < 1 || namelen > 256)
             return 1;
         rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, tohost,
@@ -1336,11 +1345,15 @@ static int read_message_header(netinfo_type *netinfo_ptr,
         if (rc != namelen)
             return 1;
     } else {
-        strncpy(tohost, wire_header->tohost, HOSTNAME_LEN);
+        strncpy(tohost, tmpheader->tohost, HOSTNAME_LEN);
         tohost[HOSTNAME_LEN - 1] = 0;
     }
 
     return 0;
+
+err:
+    free(tmpheader);
+    return 1;
 }
 
 static int write_heartbeat(netinfo_type *netinfo_ptr,
@@ -1350,7 +1363,7 @@ static int write_heartbeat(netinfo_type *netinfo_ptr,
     return write_message_int(netinfo_ptr, host_node_ptr, WIRE_HEADER_HEARTBEAT,
                              NULL, 0,
                              WRITE_MSG_HEAD | WRITE_MSG_NODUPE |
-                              WRITE_MSG_NOLIMIT);
+                             WRITE_MSG_NOLIMIT);
 
 }
 
@@ -3283,19 +3296,52 @@ inline int net_count_connected_nodes(netinfo_type *netinfo_ptr)
     return connected;
 }
 
-/* This appears to be unused -- Sam J 03/24/05 */
-void print_netinfo(netinfo_type *netinfo_ptr)
+/* 
+ * Reads the payload of hello messages.
+ */
+static int read_hello_payload(read_data *read_data_ptr)
 {
-    host_node_type *ptr;
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    SBUF2 *sb;
+    int len;
+    int rc;
 
-    Pthread_rwlock_rdlock(&(netinfo_ptr->lock));
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    sb = host_node_ptr->sb;
 
-    for (ptr = netinfo_ptr->head; ptr != NULL; ptr = ptr->next) {
-        logmsg(LOGMSG_USER, "%s:%d fd=%d host=%s\n", ptr->host, ptr->port, ptr->fd,
-                ptr->host);
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb, &len, sizeof(int));
+    if (rc < 0)
+        return -1;
+    if (rc != sizeof(int)) {
+        return 1;
+    }
+    len = ntohl(len);
+    /* don't include size of len in len */
+    len -= sizeof(int);
+
+    /* some reasonable sanity check on len */
+    if ((len < 10) || (len > 1024 * 1024)) {
+        return 1;
     }
 
-    Pthread_rwlock_unlock(&(netinfo_ptr->lock));
+#ifdef PER_THREAD_MALLOC
+    read_data_ptr->payload = malloc(len + sizeof(int));
+#else
+    read_data_ptr->payload = comdb2_malloc(host_node_ptr->msp,
+                                           len + sizeof(int));
+#endif
+    memcpy(read_data_ptr->payload, &len, sizeof(int));
+
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb,
+                     read_data_ptr->payload + sizeof(int), len);
+    if (rc < 0)
+        return -1;
+    if (rc != (len)) {
+        free(read_data_ptr->payload);
+        return 1;
+    }
 }
 
 /*
@@ -3306,49 +3352,24 @@ void print_netinfo(netinfo_type *netinfo_ptr)
    pointer when done.  numhosts will be set upon return to indicate
    number of entries actually returned
  */
-static int read_hostlist(netinfo_type *netinfo_ptr, SBUF2 *sb, char *hosts[],
+static int read_hostlist(read_data *read_data_ptr, char *hosts[],
                          int ports[], int *numhosts)
 {
-    int datasz;
-    int i;
+    char *p_buf;
+    int len;
     int num;
-    char *data;
+    int i;
     int rc;
-    int tmp;
-    uint8_t *p_buf, *p_buf_end;
 
-    rc = read_stream(netinfo_ptr, NULL, sb, &tmp, sizeof(int));
-    if (rc < 0)
-        return -1;
-    if (rc != sizeof(int)) {
-        return 1;
-    }
+    p_buf = read_data_ptr->payload;
+    /* this was endianized on the way in read_hello_payload() */
+    memcpy(&len, p_buf, sizeof(int));
+    p_buf += sizeof(int);
 
-    p_buf = (uint8_t *)&tmp;
-    p_buf_end = ((uint8_t *)&tmp + sizeof(int));
-    buf_get(&datasz, sizeof(int), p_buf, p_buf_end);
-
-    /* some reasonable sanity check on datasz */
-    if ((datasz < 10) || (datasz > 1024 * 1024)) {
-        return 1;
-    }
-
-    data = mymalloc(datasz);
-    p_buf = (uint8_t *)data;
-    p_buf_end = ((uint8_t *)data + datasz);
-
-    /* read one integer less than datasz because we already read
-       datasz */
-    rc = read_stream(netinfo_ptr, NULL, sb, data, datasz - sizeof(int));
-    if (rc < 0)
-        return -1;
-    if (rc != (datasz - sizeof(int))) {
-        free(data);
-        return 1;
-    }
-
-    /* copy out the numhosts */
-    p_buf = (uint8_t *)buf_get(&num, sizeof(num), p_buf, p_buf_end);
+    /* count of hosts */
+    memcpy(&num, p_buf, sizeof(int));
+    num = ntohl(num);
+    p_buf += sizeof(int);
 
     /* make sure we only return what fits in the user's buffer */
     if (num < *numhosts)
@@ -3356,33 +3377,28 @@ static int read_hostlist(netinfo_type *netinfo_ptr, SBUF2 *sb, char *hosts[],
 
     /* copy out the hosts, make sure the strings are \0 terminated */
     for (i = 0; i < *numhosts; i++) {
-        hosts[i] = mymalloc(HOSTNAME_LEN + 1);
-        p_buf =
-            (uint8_t *)buf_no_net_get(hosts[i], HOSTNAME_LEN, p_buf, p_buf_end);
-        hosts[i][HOSTNAME_LEN] = '\0';
+        hosts[i] = p_buf;
+        /* probably not needed this is done when sending too */
+        hosts[i][HOSTNAME_LEN - 1] = '\0';
+        p_buf += HOSTNAME_LEN;
     }
 
     /* copy out the ports */
     for (i = 0; i < *numhosts; i++) {
         int *p_port = (ports + i);
-        p_buf = (uint8_t *)buf_get(p_port, sizeof(int), p_buf, p_buf_end);
+        memcpy(p_port, p_buf, sizeof(int));
     }
 
     /* read and discard node numbers */
-    for (i = 0; i < *numhosts; i++) {
-        int node;
-        p_buf = (uint8_t *)buf_get(&node, sizeof(int), p_buf, p_buf_end);
-    }
+    p_buf += *numhosts * sizeof(int);
 
     for (i = 0; i < *numhosts; i++) {
         if (hosts[i][0] == '.') {
-            int len = atoi(&hosts[i][1]);
-            hosts[i] = realloc(hosts[i], len);
-            p_buf = (uint8_t *)buf_no_net_get(hosts[i], len, p_buf, p_buf_end);
+            int hostlen = atoi(&hosts[i][1]);
+            hosts[i] = p_buf;
+            p_buf += hostlen;
         }
     }
-
-    free(data);
 
     return 0;
 }
@@ -4210,64 +4226,28 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
 }
 
 
-static int process_hello(netinfo_type *netinfo_ptr,
-                         host_node_type *host_node_ptr)
-{
-    int rc = process_hello_common(netinfo_ptr, host_node_ptr, 1);
-    if (rc == 1) {
-        logmsg(LOGMSG_ERROR, "rejected hello from %s\n", host_node_ptr->host);
-    }
-    if (rc == 0) {
-        write_hello_reply(netinfo_ptr, host_node_ptr);
-    } else if (rc != -1) {
-        /* Only propogate IO errors backwards. */
-        rc = 0;
-    }
-    return rc;
-}
-
-
-static int process_hello_reply(netinfo_type *netinfo_ptr,
-                               host_node_type *host_node_ptr)
-{
-    int rc = process_hello_common(netinfo_ptr, host_node_ptr, 0);
-    if (rc == 1) {
-        logmsg(LOGMSG_ERROR, "rejected hello reply from %s\n", host_node_ptr->host);
-    }
-    if (rc != -1) {
-        /* Only propogate IO errors backwards. */
-        rc = 0;
-    }
-    return rc;
-}
-
-/* Common code for processing hello and hello reply.
- *
- * Inputs: look_for_magic==1 if we want to check for the MAGICNODE.
- *
- * Returns:
- *    1     Hello was rejected (contained bad port numbers or error in
- *          read_hostlist).
- *    -1    IO error, reader thread cleans up.
- *    0     Success.
+/* 
+ * Process a hello.
  */
-static int process_hello_common(netinfo_type *netinfo_ptr,
-                                host_node_type *host_node_ptr,
-                                int look_for_magic)
+static int process_hello(read_data *read_data_ptr)
 {
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
     char *hosts[REPMAX];
     int ports[REPMAX];
     host_node_type *newhost, *fndhost;
     int rc;
     int numhosts = REPMAX;
 
-    rc = read_hostlist(netinfo_ptr, host_node_ptr->sb, hosts, ports, &numhosts);
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    rc = read_hostlist(read_data_ptr, hosts, ports, &numhosts);
     if (rc < 0)
-        return -1; /* reader thread cleans up */
+        return -1;
     if (rc != 0) {
         logmsg(LOGMSG_ERROR, 
                "process_hello_common:error from read_hostlist, rc=%d\n", rc);
-        return 0;
+        return 1;
     }
 
     /* add each host, dont worry, dupes wont be added */
@@ -4288,9 +4268,6 @@ static int process_hello_common(netinfo_type *netinfo_ptr,
 
         host_node_ptr->got_hello = 1;
     }
-
-    for (int i = 0; i < numhosts; i++)
-        free(hosts[i]);
 
     return 0;
 }
@@ -4345,7 +4322,8 @@ static void *reader_thread(void *arg)
 {
     netinfo_type *netinfo_ptr;
     host_node_type *host_node_ptr;
-    wire_header_type wire_header;
+    wire_header_type *wire_header;
+    read_data *read_data_ptr;
     int rc;
     int th_start_time = time_epoch();
     char fromhost[256], tohost[256];
@@ -4397,30 +4375,38 @@ static void *reader_thread(void *arg)
         host_node_ptr->timestamp = time_epoch();
 
         if (netinfo_ptr->trace && debug_switch_net_verbose())
-           logmsg(LOGMSG_USER, "RT: got packet type=%d %llu\n", wire_header.type,
+           logmsg(LOGMSG_USER, "RT: got packet type=%d %llu\n", wire_header->type,
                    gettmms());
 
-        switch (wire_header.type) {
+#ifdef PER_THREAD_MALLOC
+        read_data_ptr = malloc(sizeof(read_data_ptr));
+#else
+        read_data_ptr = comdb2_malloc(host_node_ptr->msp,
+                                          sizeof(read_data_ptr));
+#endif
+        read_data_ptr->host_node_ptr = host_node_ptr;
+        read_data_ptr->header = wire_header;
+
+        switch (wire_header->type) {
         case WIRE_HEADER_HEARTBEAT:
             /* No special processing for heartbeats */
             break;
 
         case WIRE_HEADER_HELLO:
-            rc = process_hello(netinfo_ptr, host_node_ptr);
+            rc = read_hello_payload(read_data_ptr);
+            rc = process_hello(read_data_ptr);
+            rc = write_hello_reply(netinfo_ptr, host_node_ptr);
             if (rc != 0) {
-                logmsg(LOGMSG_ERROR, "reader thread: hello error from host %s\n",
+                logmsg(LOGMSG_ERROR,
+                       "reader thread: hello error from host %s\n",
                         host_node_ptr->host);
                 goto done;
             }
             break;
 
         case WIRE_HEADER_HELLO_REPLY:
-            rc = process_hello_reply(netinfo_ptr, host_node_ptr);
-            if (rc != 0) {
-                logmsg(LOGMSG_ERROR, "reader thread: hello error from host %s\n",
-                        host_node_ptr->host);
-                goto done;
-            }
+            rc = read_hello_payload(read_data_ptr);
+            rc = process_hello(read_data_ptr);
             break;
 
         case WIRE_HEADER_DECOM_NAME:
@@ -4465,14 +4451,16 @@ static void *reader_thread(void *arg)
         default:
             logmsg(LOGMSG_ERROR, 
                    "reader thread: unknown wire_header.type: %d from host %s\n",
-                   wire_header.type, host_node_ptr->host);
+                   wire_header->type, host_node_ptr->host);
             break;
         }
+        free(wire_header);
 
         if (netinfo_ptr->trace && debug_switch_net_verbose())
-           logmsg(LOGMSG_USER, "RT: done processing %d %llu\n", wire_header.type,
+           logmsg(LOGMSG_USER, "RT: done processing %d %llu\n", wire_header->type,
                    gettmms());
     }
+
 
 done:
 

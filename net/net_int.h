@@ -58,6 +58,12 @@ enum { NET_WIRE_HEADER_TYPE_LEN = 16 + 4 + 4 + 16 + 4 + 4 + 4 };
 BB_COMPILE_TIME_ASSERT(net_write_header_type,
                        sizeof(wire_header_type) == NET_WIRE_HEADER_TYPE_LEN);
 
+typedef struct read_node_data {
+    host_node_type *host_node_ptr;
+    wire_header_type *header;
+    char *payload;
+} read_data;
+
 typedef struct write_node_data {
     int flags;
     int enque_time;
