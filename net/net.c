@@ -3403,74 +3403,6 @@ static int read_hostlist(read_data *read_data_ptr, char *hosts[],
     return 0;
 }
 
-static int read_user_data(host_node_type *host_node_ptr, int *type, int *seqnum,
-                          int *needack, int *datalen, void **data,
-                          int *malloced)
-{
-    int rc;
-    net_send_message_header msghdr;
-    uint8_t databf[NET_SEND_MESSAGE_HEADER_LEN], *p_buf, *p_buf_end;
-    netinfo_type *netinfo_ptr = host_node_ptr->netinfo_ptr;
-    SBUF2 *sb = host_node_ptr->sb;
-
-    *malloced = 0;
-
-    rc = read_stream(netinfo_ptr, host_node_ptr, sb, &databf, sizeof(databf));
-    if (rc != sizeof(msghdr)) {
-        host_node_errf(LOGMSG_ERROR, host_node_ptr,
-                       "read_user_data:error reading user data header\n");
-        goto fail;
-    }
-
-    p_buf = databf;
-    p_buf_end = (databf + NET_SEND_MESSAGE_HEADER_LEN);
-
-    net_send_message_header_get(&msghdr, p_buf, p_buf_end);
-
-    *type = msghdr.usertype;
-    *seqnum = msghdr.seqnum;
-    *needack = msghdr.waitforack;
-    *datalen = msghdr.datalen;
-
-    if (*datalen > 0) {
-        if (netinfo_ptr->trace && debug_switch_net_verbose())
-            logmsg(LOGMSG_ERROR, "Reading %d bytes %llu\n", *datalen, gettmms());
-
-        if (*datalen < (netinfo_ptr->user_data_buf_size)) {
-            *data = host_node_ptr->user_data_buf;
-            *malloced = 0;
-        } else {
-            *data = mymalloc(*datalen);
-            *malloced = 1;
-        }
-
-        if (*data == NULL) {
-            host_node_errf(LOGMSG_ERROR, host_node_ptr, "%s: malloc %d failed\n", __func__,
-                           *datalen);
-            goto fail;
-        }
-        rc = read_stream(netinfo_ptr, host_node_ptr, sb, *data, *datalen);
-        if (rc != *datalen) {
-            host_node_errf(LOGMSG_ERROR, host_node_ptr,
-                           "read_user_data:error reading user_data, "
-                           "wanted %d bytes, got %d\n",
-                           *datalen, rc);
-
-            if (*malloced)
-                free(*data);
-
-            goto fail;
-        }
-    } else {
-        *data = NULL;
-    }
-
-    return 0;
-
-fail:
-    return -1;
-}
-
 int net_ack_message_payload(void *handle, int outrc, void *payload,
                             int payloadlen)
 {
@@ -3650,27 +3582,91 @@ int net_ack_message(void *handle, int outrc)
     return rc;
 }
 
-static int process_user_message(netinfo_type *netinfo_ptr,
-                                host_node_type *host_node_ptr)
+static int read_user_payload(read_data *read_data_ptr)
 {
-    int usertype, seqnum, datalen, needack;
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    SBUF2 *sb;
+    net_send_message_header msghdr;
+    char *data, *p_buf;
+    int rc;
+
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    sb = host_node_ptr->sb;
+
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb, &msghdr, sizeof(msghdr));
+    if (rc != sizeof(msghdr)) {
+        host_node_errf(LOGMSG_ERROR, host_node_ptr,
+                       "%s:error reading user data header\n", __func__);
+        goto fail;
+    }
+
+    msghdr.usertype = ntohl(msghdr.usertype);
+    msghdr.seqnum = ntohl(msghdr.seqnum);
+    msghdr.waitforack = ntohl(msghdr.waitforack);
+    msghdr.datalen = ntohl(msghdr.datalen);
+
+    data = malloc(msghdr.datalen + sizeof(net_send_message_header));
+    read_data_ptr->payload = data;
+    if (data == NULL) {
+        host_node_errf(LOGMSG_ERROR, host_node_ptr,
+                       "%s: malloc %d failed\n", __func__,
+                       msghdr.datalen);
+        goto fail;
+    }
+    if (msghdr.datalen > 0) {
+        if (netinfo_ptr->trace && debug_switch_net_verbose())
+            logmsg(LOGMSG_ERROR, "Reading %d bytes %llu\n", msghdr.datalen,
+                   gettmms());
+
+        p_buf = data + sizeof(net_send_message_header);
+        rc = read_stream(netinfo_ptr, host_node_ptr, sb, p_buf,
+                         msghdr.datalen);
+        if (rc != msghdr.datalen) {
+            host_node_errf(LOGMSG_ERROR, host_node_ptr,
+                           "%s:error reading user_data, "
+                           "wanted %d bytes, got %d\n",
+                           __func__, msghdr.datalen, rc);
+
+            free(data);
+            read_data_ptr->payload = NULL;
+            goto fail;
+        }
+    }
+
+    /* success, copy the header to the front */
+    memcpy(data, &msghdr, sizeof(net_send_message_header));
+    return 0;
+
+fail:
+    return -1;
+}
+
+static int process_user_message(read_data *read_data_ptr)
+{
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    net_send_message_header *msghdr;
+    int usertype, seqnum, needack, datalen;
     ack_state_type *ack_state = NULL;
-    void *data;
+    char *p_buf;
+    int rc;
+
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    msghdr = (net_send_message_header*) read_data_ptr->payload;
+    p_buf = read_data_ptr->payload + sizeof(net_send_message_header);
 
     /* deliver nothing for fake netinfo */
     if (netinfo_ptr->fake || netinfo_ptr->exiting)
         return 0;
 
 
-    int malloced = 0;
-
-    int rc = read_user_data(host_node_ptr, &usertype, &seqnum, &needack,
-                            &datalen, &data, &malloced);
-
-    /* fprintf(stderr, "process_user_message from %s, ut=%d\n", host_node_ptr->host, usertype); */
-
-    if (rc != 0)
-        return -1; /* not sure ... exit the reader thread??? */
+    usertype = msghdr->usertype;
+    seqnum = msghdr->seqnum;
+    needack = msghdr->waitforack;
+    datalen = msghdr->datalen;
 
     if (usertype == TYPE_DECOM_NAME ||
         (usertype >= 0 && usertype <= MAX_USER_TYPE &&
@@ -3689,9 +3685,9 @@ static int process_user_message(netinfo_type *netinfo_ptr,
         switch (usertype) {
         case TYPE_DECOM_NAME:
             logmsg(LOGMSG_DEBUG, "process_user_decom: decom for node %s\n",
-                    (char *)data);
+                    (char *)p_buf);
 
-            net_decom_node(netinfo_ptr, (const char *)data);
+            net_decom_node(netinfo_ptr, (const char *)p_buf);
             logmsg(LOGMSG_DEBUG, "process_user_decom: "
                             "calling net_ack_message\n");
             net_ack_message(ack_state, 0);
@@ -3708,7 +3704,7 @@ static int process_user_message(netinfo_type *netinfo_ptr,
             /* run the user's function */
             netinfo_ptr->userfuncs[usertype](ack_state, netinfo_ptr->usrptr,
                                              host_node_ptr->host, usertype,
-                                             data, datalen, 1);
+                                             p_buf, datalen, 1);
 
             /* update timestamp before checking it */
             Pthread_mutex_lock(&(host_node_ptr->timestamp_lock));
@@ -3726,8 +3722,7 @@ static int process_user_message(netinfo_type *netinfo_ptr,
     if (ack_state)
         free(ack_state);
 
-    if (malloced)
-        free(data);
+    free(read_data_ptr->payload);
 
     return 0;
 }
@@ -4411,6 +4406,8 @@ static void *reader_thread(void *arg)
         read_data_ptr->host_node_ptr = host_node_ptr;
         read_data_ptr->header = wire_header;
 
+        void *data;
+
         switch (wire_header->type) {
         case WIRE_HEADER_HEARTBEAT:
             /* No special processing for heartbeats */
@@ -4446,7 +4443,8 @@ static void *reader_thread(void *arg)
         case WIRE_HEADER_USER_MSG:
             if (netinfo_ptr->trace && debug_switch_net_verbose())
                 logmsg(LOGMSG_DEBUG, "Here %llu\n", gettmms());
-            rc = process_user_message(netinfo_ptr, host_node_ptr);
+            rc = read_user_payload(read_data_ptr);
+            rc = process_user_message(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, 
                         "reader thread: process_user_message error from host %s\n",
