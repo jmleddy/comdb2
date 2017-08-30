@@ -1152,8 +1152,8 @@ static int write_message_int(netinfo_type *netinfo_ptr,
     wire_header = malloc(sizeof (*wire_header));
     new_iov = malloc((iovcount + 3) * sizeof(struct iovec));
 #else
-    wire_header = comdb2_malloc(sizeof (*wire_header));
-    new_iov = comdb2_malloc((iovcount + 3) * sizeof(struct iovec));
+    wire_header = comdb2_malloc(host_node_ptr->msp, sizeof (*wire_header));
+    new_iov = comdb2_malloc(host_node_ptr->msp, (iovcount + 3) * sizeof(struct iovec));
 #endif
     
     /*
@@ -1306,7 +1306,7 @@ static int read_message_header(netinfo_type *netinfo_ptr,
 #ifdef PER_THREAD_MALLOC
     tmpheader = malloc(sizeof(wire_header_type));
 #else
-    tmpheader = comdb2_malloc(sizeof(wire_header_type));
+    tmpheader = comdb2_malloc(host_node_ptr->msp, sizeof(wire_header_type));
 #endif
     *wire_header = tmpheader;
 
