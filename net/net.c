@@ -544,7 +544,6 @@ static void check_list_sizes(host_node_type *host_node_ptr)
 #endif
 
 /* Enque a net message consisting of a header and some optional data.
- * The caller should hold the enque lock.
  * Note that dataptr1==NULL => datasz1==0 and dataptr2==NULL => datasz2==0
  */
 static int write_list(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
@@ -1230,7 +1229,6 @@ static int write_message_checkhello(netinfo_type *netinfo_ptr,
                                     int nodelay, int nodrop, int inorder)
 {
     return write_message_int(netinfo_ptr, host_node_ptr, type, iov, iovcount,
-                             (nodelay ? WRITE_MSG_NODELAY : 0) |
                                  WRITE_MSG_NOHELLOCHECK |
                                  (nodrop ? WRITE_MSG_NOLIMIT : 0) |
                                  (inorder ? WRITE_MSG_INORDER : 0));
@@ -1242,7 +1240,7 @@ static int write_message_nohello(netinfo_type *netinfo_ptr,
 {
     struct iovec iov = {(void *)data, datalen};
     return write_message_int(netinfo_ptr, host_node_ptr, type, &iov, 1,
-                             WRITE_MSG_NODELAY | WRITE_MSG_NOHELLOCHECK);
+                             WRITE_MSG_NOHELLOCHECK);
 }
 
 static int write_message(netinfo_type *netinfo_ptr,
@@ -1251,7 +1249,7 @@ static int write_message(netinfo_type *netinfo_ptr,
 {
     struct iovec iov = {(void *)data, datalen};
     return write_message_int(netinfo_ptr, host_node_ptr, type, &iov, 1,
-                             WRITE_MSG_NODELAY);
+                             0);
 }
 
 static void re_register_portmux(netinfo_type *netinfo_ptr) {
@@ -1362,7 +1360,7 @@ static int write_heartbeat(netinfo_type *netinfo_ptr,
     return write_message_int(netinfo_ptr, host_node_ptr, WIRE_HEADER_HEARTBEAT,
                              NULL, 0,
                              WRITE_MSG_HEAD | WRITE_MSG_NODUPE |
-                             WRITE_MSG_NODELAY | WRITE_MSG_NOLIMIT);
+                              WRITE_MSG_NOLIMIT);
 
 }
 
@@ -4212,11 +4210,10 @@ static void *writer_thread(void *args)
                     wire_header_type *wire_header, tmp_wire_hdr;
                     uint8_t *p_buf, *p_buf_end;
 
-                    if (flags & WRITE_MSG_NODELAY) {
-                        age = time_epoch() - write_list_ptr->enque_time;
-                        if (age > maxage)
-                            maxage = age;
-                    }
+                    age = time_epoch() - write_list_ptr->enque_time;
+                    if (age > maxage)
+                        maxage = age;
+
 
                     /* File in the wire header with correct details for our
                      * current connection. */
@@ -4253,12 +4250,10 @@ static void *writer_thread(void *args)
             /* we seem to set nodelay on virtually every message.  try to get
              * slightly better streaming performance by moving the flush out of
              * the main loop. */
-            if (flags & WRITE_MSG_NODELAY) {
-                net_delay(host_node_ptr->host);
-                if (netinfo_ptr->trace && debug_switch_net_verbose())
-                    logmsg(LOGMSG_USER, "Flushing %llu\n", gettmms());
-                sbuf2flush(host_node_ptr->sb);
-            }
+            net_delay(host_node_ptr->host);
+            if (netinfo_ptr->trace && debug_switch_net_verbose())
+                logmsg(LOGMSG_USER, "Flushing %llu\n", gettmms());
+            sbuf2flush(host_node_ptr->sb);
             end_time = time_epoch();
             Pthread_mutex_unlock(&(host_node_ptr->write_lock));
 

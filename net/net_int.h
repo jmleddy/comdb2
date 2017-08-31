@@ -37,11 +37,10 @@
 enum {
     /* Flags for write_list() */
     WRITE_MSG_HEAD = 1,
-    WRITE_MSG_NODELAY = 2,
-    WRITE_MSG_NOHELLOCHECK = 4,
-    WRITE_MSG_NODUPE = 8,
-    WRITE_MSG_NOLIMIT = 16,
-    WRITE_MSG_INORDER = 32
+    WRITE_MSG_NOHELLOCHECK = 2,
+    WRITE_MSG_NODUPE = 4,
+    WRITE_MSG_NOLIMIT = 8,
+    WRITE_MSG_INORDER = 16
 };
 
 typedef struct {
