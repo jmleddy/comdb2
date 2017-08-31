@@ -191,6 +191,8 @@ int SBUF2_FUNC(sbuf2unbufferedread)(SBUF2 *sb, char *cc, int len);
 #define sbuf2unbufferedread SBUF2_FUNC(sbuf2unbufferedread)
 int SBUF2_FUNC(sbuf2unbufferedwrite)(SBUF2 *sb, const char *cc, int len);
 #define sbuf2unbufferedwrite SBUF2_FUNC(sbuf2unbufferedwrite)
+int SBUF2_FUNC(sbuf2pollin)(SBUF2 *sb, int timeout);
+#define sbuf2pollin SBUF2_FUNC(sbuf2pollin)
 
 /* Include this one more broadly so we can use get_origin_mach_by_fd */
 char *SBUF2_FUNC(get_origin_mach_by_buf)(SBUF2 *);
