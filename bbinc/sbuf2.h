@@ -189,6 +189,12 @@ int SBUF2_FUNC(sbuf2eof)(SBUF2 *sb);
 */
 int SBUF2_FUNC(sbuf2unbufferedread)(SBUF2 *sb, char *cc, int len);
 #define sbuf2unbufferedread SBUF2_FUNC(sbuf2unbufferedread)
+#ifndef WITH_SSL
+#include <sys/types.h>
+#include <sys/socket.h>
+int SBUF2_FUNC(sbuf2writev)(SBUF2* sb, const struct iovec *iov, int iovcnt);
+#define sbuf2writev SBUF2_FUNC(sbuf2writev)
+#endif
 int SBUF2_FUNC(sbuf2unbufferedwrite)(SBUF2 *sb, const char *cc, int len);
 #define sbuf2unbufferedwrite SBUF2_FUNC(sbuf2unbufferedwrite)
 int SBUF2_FUNC(sbuf2pollin)(SBUF2 *sb, int timeout);

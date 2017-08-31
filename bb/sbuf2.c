@@ -539,6 +539,18 @@ static int swrite(SBUF2 *sb, const char *cc, int len)
     return rc;
 }
 
+#if !WITH_SSL
+int SBUF2_FUNC(sbuf2writev)(SBUF2* sb, const struct iovec *iov, int iovcnt)
+{
+    struct msghdr msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = (struct iovec*) iov;
+    msg.msg_iovlen = iovcnt;
+    return sendmsg(sb->fd, &msg, 0);
+}
+#endif
+
 int SBUF2_FUNC(sbuf2unbufferedwrite)(SBUF2 *sb, const char *cc, int len)
 {
     int n, ioerr;

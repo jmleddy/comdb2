@@ -16,9 +16,6 @@
 
 #define NODELAY
 #define NOLINGER
-#ifdef _LINUX_SOURCE
-#define TCPBUFSZ
-#endif
 
 /*#define PTHREAD_USERFUNC*/
 
@@ -450,8 +447,6 @@ static void shutdown_hostnode_socket(host_node_type *host_node_ptr)
     }
 }
 
-static void flush_writer_queue(host_node_type *host_node_ptr);
-
 /* This must be called while holding the host_node_ptr->lock.
  *
  * This will call shutdown() on the fd, which will cause the reader & writer
@@ -472,9 +467,6 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
         shutdown_hostnode_socket(host_node_ptr);
 
         host_node_ptr->got_hello = 0;
-
-        /* wake up the writer thread if it's asleep */
-        flush_writer_queue(host_node_ptr);
 
         /* call the hostdown routine if provided */
         if (host_node_ptr->netinfo_ptr->hostdown_rtn) {
@@ -547,14 +539,14 @@ static void check_list_sizes(host_node_type *host_node_ptr)
  * Note that dataptr1==NULL => datasz1==0 and dataptr2==NULL => datasz2==0
  */
 static int write_list(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
-                      const wire_header_type *headptr, const struct iovec *iov,
-                      int iovcount, int flags)
+                      const struct iovec *iov, int iovcount, int flags)
 {
     write_data *insert;
     int ii;
     size_t datasz;
     char *ptr;
     int rc;
+
 
     Pthread_mutex_lock(&(host_node_ptr->enquelk));
 
@@ -566,6 +558,18 @@ static int write_list(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
             host_node_ptr->num_queue_full++;
 
             rc = -2;
+            goto out;
+        }
+    } else if (!netinfo_ptr->exiting &&
+               !(host_node_ptr->state_flags &
+                 (NET_STATE_DECOM | NET_STATE_CLOSED))) {
+        /* Don't write directly if there is stuff in queue */
+        rc = sbuf2writev(host_node_ptr->sb, iov, iovcount);
+        rc = rc > 0 ? 0 : -3;
+        if (rc) {
+            /* Try the old way if writev didn't work */
+            perror("sendmsg failed in write_list");
+        } else {
             goto out;
         }
     }
@@ -625,21 +629,10 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
     insert->enque_time = time_epoch();
     insert->next = NULL;
     insert->prev = NULL;
-    insert->len = sizeof(wire_header_type) + datasz;
+    insert->len = datasz;
 
-    memcpy(&insert->payload.header, headptr, sizeof(wire_header_type));
-    ptr = insert->payload.raw + sizeof(wire_header_type);
-    // start = insert->payload.raw;
+    ptr = insert->payload.raw;
 
-    /* if we have long hostnames, account for them here */
-    if (netinfo_ptr->myhostname_len >= HOSTNAME_LEN) {
-        memcpy(ptr, netinfo_ptr->myhostname, netinfo_ptr->myhostname_len);
-        ptr += netinfo_ptr->myhostname_len;
-    }
-    if (host_node_ptr->hostname_len >= HOSTNAME_LEN) {
-        memcpy(ptr, host_node_ptr->host, host_node_ptr->hostname_len);
-        ptr += host_node_ptr->hostname_len;
-    }
     for (ii = 0; ii < iovcount; ii++) {
         if (iov[ii].iov_base) {
             memcpy(ptr, iov[ii].iov_base, iov[ii].iov_len);
@@ -1138,43 +1131,65 @@ static int write_connect_message(netinfo_type *netinfo_ptr,
     return 0;
 }
 
+/* Forward declaration for write_message_int */
+static void flush_writer_queue(host_node_type *host_node_ptr);
+
 /* To reduce double buffering and other daftness this has evolved a sort of
  * writev style interface with data1 and data2. */
 static int write_message_int(netinfo_type *netinfo_ptr,
                              host_node_type *host_node_ptr, int type,
                              const struct iovec *iov, int iovcount, int flags)
 {
-    wire_header_type wire_header;
+    wire_header_type *wire_header;
+    struct iovec *new_iov;
+    int header_iovcount;
     int rc;
 
-    if ((flags & WRITE_MSG_NOHELLOCHECK) == 0) {
-        if (!host_node_ptr->got_hello) {
-            /*
-            fprintf(stderr, "%s: to %s, no hello\n",
-               __func__, host_node_ptr->host);
-            */
-            return -9;
-        }
+    header_iovcount = 0;
+
+    wire_header = malloc_pt(host_node_ptr->msp, sizeof (*wire_header));
+    new_iov = malloc_pt(host_node_ptr->msp,
+			(iovcount + 3) * sizeof(struct iovec));
+
+    /*
+     * Fill in these details now
+     */
+    strncpy(wire_header->fromhost, netinfo_ptr->myhostname,
+       sizeof(wire_header->fromhost));
+    wire_header->fromport = htonl(netinfo_ptr->myport);
+    /* 0 because R7 */
+    wire_header->fromnode = 0;
+    strncpy(wire_header->tohost, host_node_ptr->host,
+       sizeof(wire_header->tohost));
+    wire_header->toport = htonl(host_node_ptr->port);
+    wire_header->tonode = 0;
+    wire_header->type = htonl(type);
+
+    new_iov[0].iov_base = wire_header;
+    new_iov[0].iov_len = sizeof(*wire_header);
+    header_iovcount++;
+
+    /* if we have long hostnames, add them to the iov */
+    if (netinfo_ptr->myhostname_len >= HOSTNAME_LEN) {
+        new_iov[header_iovcount].iov_base = netinfo_ptr->myhostname;
+        new_iov[header_iovcount].iov_len = netinfo_ptr->myhostname_len;
+        header_iovcount++;
+    }
+    if (host_node_ptr->hostname_len >= HOSTNAME_LEN) {
+        new_iov[header_iovcount].iov_base = host_node_ptr->host;
+        new_iov[header_iovcount].iov_len = host_node_ptr->hostname_len;
+        header_iovcount++;
     }
 
-    /* The writer thread will fill in these details later.. for now, we don't
-     * necessarily know the correct details anyway. */
-    /*
-    strncpy(wire_header.fromhost, netinfo_ptr->myhostname,
-       sizeof(wire_header.fromhost));
-    wire_header.fromport = netinfo_ptr->myport;
-    wire_header.fromnode = netinfo_ptr->mynode;
-    strncpy(wire_header.tohost, host_node_ptr->host,
-       sizeof(wire_header.tohost));
-    wire_header.toport = host_node_ptr->port;
-    wire_header.tonode = host_node_ptr->node;
-    */
-
-    wire_header.type = type;
+    if (iovcount)
+        memcpy(&new_iov[header_iovcount], iov, iovcount * sizeof(struct iovec));
+    iovcount += header_iovcount;
 
     /* Add this message to our linked list to send. */
-    rc = write_list(netinfo_ptr, host_node_ptr, &wire_header, iov, iovcount,
+    rc = write_list(netinfo_ptr, host_node_ptr, new_iov, iovcount,
                     flags);
+    free(wire_header);
+    free(new_iov);
     if (rc < 0) {
         if (rc == -1) {
             logmsg(LOGMSG_ERROR, "%s: got reallybad failure?\n", __func__);
@@ -1193,12 +1208,12 @@ static int write_message_int(netinfo_type *netinfo_ptr,
 static int write_message_checkhello(netinfo_type *netinfo_ptr,
                                     host_node_type *host_node_ptr, int type,
                                     const struct iovec *iov, int iovcount,
-                                    int nodelay, int nodrop, int inorder)
+                                    int flags)
 {
     return write_message_int(netinfo_ptr, host_node_ptr, type, iov, iovcount,
-                                 WRITE_MSG_NOHELLOCHECK |
-                                 (nodrop ? WRITE_MSG_NOLIMIT : 0) |
-                                 (inorder ? WRITE_MSG_INORDER : 0));
+                             flags);
+                                 /* (nodrop ? WRITE_MSG_NOLIMIT : 0) | */
+                                 /* (inorder ? WRITE_MSG_INORDER : 0)); */
 }
 
 static int write_message_nohello(netinfo_type *netinfo_ptr,
@@ -1778,8 +1793,7 @@ int net_send_message_payload_ack(netinfo_type *netinfo_ptr, const char *to_host,
         seq_ptr = NULL;
 
     rc = write_message_checkhello(netinfo_ptr, host_node_ptr,
-                                  WIRE_HEADER_USER_MSG, iov, 2, 1 /*nodelay*/,
-                                  0, 0);
+                                  WIRE_HEADER_USER_MSG, iov, 2, 0);
 
     if (rc != 0) {
         if (seq_ptr)
@@ -1967,9 +1981,8 @@ int net_get_stack_flush_threshold(void) { return stack_flush_min; }
 void net_set_stack_flush_threshold(int thresh) { stack_flush_min = thresh; }
 
 static int net_send_int(netinfo_type *netinfo_ptr, const char *host,
-                        int usertype, void *data, int datalen, int nodelay,
-                        int numtails, void **tails, int *taillens, int nodrop,
-                        int inorder)
+                        int usertype, void *data, int datalen,
+                        int numtails, void **tails, int *taillens, int flags)
 {
     host_node_type *host_node_ptr;
     net_send_message_header tmphd, msghd;
@@ -2029,16 +2042,8 @@ static int net_send_int(netinfo_type *netinfo_ptr, const char *host,
     }
 
     host_node_ptr->num_sends++;
-    if (nodelay) {
-        explicit_flushes++;
-        net_trace_explicit_flush();
-    } else if (host_node_ptr->num_sends > netinfo_ptr->enque_flush_interval) {
-        send_interval_flushes++;
-        nodelay = 1;
-    }
-
-    if (nodelay)
-        host_node_ptr->num_sends = 0;
+    explicit_flushes++;
+    net_trace_explicit_flush();
 
     /*ctrace("net_send_message: to node %s, ut=%d\n", host_node_ptr->host, usertype);*/
 
@@ -2070,14 +2075,8 @@ static int net_send_int(netinfo_type *netinfo_ptr, const char *host,
         }
     }
 
-    if (nodelay) {
-        host_node_ptr->num_flushes++;
-        num_flushes++;
-    }
-
     rc = write_message_checkhello(netinfo_ptr, host_node_ptr,
-                                  WIRE_HEADER_USER_MSG, iov, iovcount, nodelay,
-                                  nodrop, inorder);
+                                  WIRE_HEADER_USER_MSG, iov, iovcount, flags);
 
     /* queue is full */
     if (-2 == rc) {
@@ -2127,26 +2126,26 @@ int net_send_authcheck_all(netinfo_type *netinfo_ptr)
 
 /* Re-order this on the queue */
 int net_send_inorder(netinfo_type *netinfo_ptr, const char *host, int usertype,
-                     void *data, int datalen, int nodelay)
+                     void *data, int datalen)
 {
-    return net_send_int(netinfo_ptr, host, usertype, data, datalen, nodelay, 0,
-                        NULL, 0, 0, 1);
+    return net_send_int(netinfo_ptr, host, usertype, data, datalen, 0,
+                        NULL, NULL, WRITE_MSG_INORDER);
 }
 
 int net_send(netinfo_type *netinfo_ptr, const char *host, int usertype,
              void *data, int datalen, int nodelay)
 {
 
-    return net_send_int(netinfo_ptr, host, usertype, data, datalen, nodelay, 0,
-                        NULL, 0, 0, 0);
+    return net_send_int(netinfo_ptr, host, usertype, data, datalen, 0,
+                        NULL, NULL, 0);
 }
 
 int net_send_nodrop(netinfo_type *netinfo_ptr, const char *host, int usertype,
                     void *data, int datalen, int nodelay)
 {
 
-    return net_send_int(netinfo_ptr, host, usertype, data, datalen, nodelay, 0,
-                        NULL, 0, 1, 0);
+    return net_send_int(netinfo_ptr, host, usertype, data, datalen, 0,
+                        NULL, 0, WRITE_MSG_NOLIMIT);
 }
 
 int net_send_tails(netinfo_type *netinfo_ptr, const char *host, int usertype,
@@ -2154,8 +2153,8 @@ int net_send_tails(netinfo_type *netinfo_ptr, const char *host, int usertype,
                    void **tails, int *taillens)
 {
 
-    return net_send_int(netinfo_ptr, host, usertype, data, datalen, nodelay,
-                        numtails, tails, taillens, 0, 0);
+    return net_send_int(netinfo_ptr, host, usertype, data, datalen,
+                        numtails, tails, taillens, 0);
 }
 
 int net_send_tail(netinfo_type *netinfo_ptr, const char *host, int usertype,
@@ -2174,8 +2173,8 @@ int net_send_tail(netinfo_type *netinfo_ptr, const char *host, int usertype,
         printf("%02x ", ((char *)tail)[i]);
     printf("\n");
 #endif
-    return net_send_int(netinfo_ptr, host, usertype, data, datalen, nodelay, 1,
-                        &tail, &tailen, 0, 0);
+    return net_send_int(netinfo_ptr, host, usertype, data, datalen, 1,
+                        &tail, &tailen, 0);
 }
 
 /* returns all nodes MINUS you */
@@ -4096,7 +4095,7 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
 {
     netinfo_type *netinfo_ptr;
     write_data *write_list_ptr, *write_list_back;
-    int rc, flags, maxage;
+    int rc, maxage;
     struct timespec waittime;
 #ifndef HAS_CLOCK_GETTIME
     struct timeval tv;
@@ -4124,7 +4123,6 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
 
             pthread_cond_broadcast(&(host_node_ptr->throttle_wakeup));
 
-            flags = 0;
             maxage = 0;
 
             Pthread_mutex_lock(&(host_node_ptr->write_lock));
@@ -4140,18 +4138,6 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
                     age = time_epoch() - write_list_ptr->enque_time;
                     if (age > maxage)
                         maxage = age;
-
-
-                    /* File in the wire header with correct details for our
-                     * current connection. */
-
-                    wire_header = &write_list_ptr->payload.header;
-                    /* endianize this */
-                    wire_header->fromport = htonl(wire_header->fromport);
-                    wire_header->fromnode = htonl(wire_header->fromnode);
-                    wire_header->toport = htonl(wire_header->toport);
-                    wire_header->tonode = htonl(wire_header->tonode);
-                    wire_header->type = htonl(wire_header->type);
 
                     rc = write_stream(
                         netinfo_ptr, host_node_ptr, host_node_ptr->sb,
@@ -4630,7 +4616,6 @@ int net_get_port_by_service(const char *dbname)
 #endif
 }
 
-
 static void *connect_thread(void *arg)
 {
     netinfo_type *netinfo_ptr;
@@ -4848,6 +4833,9 @@ static void *connect_thread(void *arg)
             sbuf2setr(host_node_ptr->sb, sbuf2read_wrapper);
             sbuf2setw(host_node_ptr->sb, sbuf2write_wrapper);
         }
+
+        /* Send messages immediately don't buffer */
+        sbuf2setw(host_node_ptr->sb, sbuf2unbufferedwrite);
 
         /* doesn't matter - it's under lock ... */
         host_node_ptr->timestamp = time(NULL);
@@ -5487,6 +5475,9 @@ static void *accept_thread(void *arg)
             sbuf2setr(sb, sbuf2read_wrapper);
             sbuf2setw(sb, sbuf2write_wrapper);
         }
+
+        /* Send messages immediately don't buffer */
+        sbuf2setw(sb, sbuf2unbufferedwrite);
 
         sbuf2setbufsize(sb, netinfo_ptr->bufsz);
 
