@@ -123,6 +123,13 @@ typedef struct {
 
 #define HOSTNAME_LEN 16
 
+enum {
+    /* Flags for state_flag */
+    NET_STATE_DECOM = 1,
+    NET_STATE_CLOSED = 2,
+    NET_STATE_REALLY_CLOSED = 4
+};
+
 struct host_node_tag {
     int fd;
     SBUF2 *sb;
@@ -134,7 +141,7 @@ struct host_node_tag {
     int have_connect_thread;
     int have_reader_thread;
     int have_writer_thread;
-    int decom_flag;
+    int state_flags;
     pthread_t connect_thread_id;
     pthread_t reader_thread_id;
     pthread_t writer_thread_id;
@@ -153,8 +160,6 @@ struct host_node_tag {
     pthread_cond_t write_wakeup;
     int got_hello;
     int running_user_func; /* This is a count of how many are running */
-    int closed;
-    int really_closed;
 
     unsigned enque_count; /* number of items currently
                              enqueued for writing */
