@@ -22,7 +22,6 @@
 #include "intern_strings.h"
 
 #include "mem_bb.h"
-#include "mem_override.h"
 #include "logmsg.h"
 
 static pthread_once_t once = PTHREAD_ONCE_INIT;

@@ -389,7 +389,6 @@ struct lua_Debug {
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ******************************************************************************/
 
-#include <mem_lua.h>
-#include <mem_override.h>
+#include "mem_lua.h"
 
 #endif

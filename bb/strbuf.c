@@ -22,7 +22,6 @@
 
 #include "strbuf.h"
 #include "mem_bb.h"
-#include "mem_override.h"
 #include "logmsg.h"
 
 #define STRBUF_INC 64

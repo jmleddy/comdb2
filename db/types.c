@@ -46,7 +46,6 @@
 #include "decQuad.h"
 
 #include <mem.h>
-#include <mem_override.h>
 
 #include "debug_switches.h"
 #include "logmsg.h"

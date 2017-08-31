@@ -26,7 +26,6 @@
 
 #include "averager.h"
 #include "mem_bb.h"
-#include "mem_override.h"
 
 struct tick {
     int value;

@@ -26,7 +26,6 @@
 
 #include "pool.h"
 #include "mem_bb.h"
-#include "mem_override.h"
 #include "logmsg.h"
 
 struct pool {

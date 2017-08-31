@@ -7,7 +7,6 @@
 #include <cdb2_constants.h>
 
 #include "mem_csc2.h"
-#include "mem_override.h"
 
 extern char *revision;
 extern char VER[16]; /* version info */

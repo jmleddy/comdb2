@@ -27,7 +27,6 @@
 
 #include "lrucache.h"
 #include <mem_uncategorized.h>
-#include <mem_override.h>
 #include <logmsg.h>
 
 struct lrucache *lrucache_init(hashfunc_t *hashfunc, cmpfunc_t *cmpfunc,

@@ -4452,7 +4452,6 @@ int sqlite3DbstatRegister(sqlite3*);
 
 #ifndef _SQL_H_
 #include "mem_sqlite.h"
-#include "mem_override.h"
 #endif
 
 struct Cdb2TrigEvent {

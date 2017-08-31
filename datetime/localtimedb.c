@@ -25,7 +25,6 @@ static char elsieid[] = "@(#)localtime.c	8.5";
 #include "float.h" /* for FLT_MAX and DBL_MAX */
 
 #include "mem_datetime.h"
-#include "mem_override.h"
 #include "logmsg.h"
 
 #ifndef TZ_ABBR_MAX_LEN

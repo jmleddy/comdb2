@@ -29,8 +29,6 @@
 #include "marshal.h"
 
 #include <mem_uncategorized.h>
-#include <mem_override.h>
-
 #include <logmsg.h>
 
 struct marshal_t {

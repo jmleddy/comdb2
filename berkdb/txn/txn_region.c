@@ -151,7 +151,7 @@ __txn_init(dbenv, tmgrp)
 				return (ret);
 			ret = __log_c_get(logc, &lsn, &logrec, DB_LAST);
 			if (logrec.data)
-				free(logrec.data);
+				__os_free(dbenv, logrec.data);
 
 			if (ret != DB_NOTFOUND)
 				logmsg(LOGMSG_ERROR, "Did not find a valid checkpoint in logs\n");

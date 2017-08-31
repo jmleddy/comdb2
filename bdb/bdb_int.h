@@ -65,7 +65,6 @@
 #include "ix_return_codes.h"
 
 #include "mem_bdb.h"
-#include "mem_override.h"
 #include "tunables.h"
 
 /* Public ODH constants */

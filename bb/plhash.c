@@ -29,7 +29,6 @@
 #include "sysutil_membar.h"
 #include "compile_time_assert.h"
 #include "mem_bb.h"
-#include "mem_override.h"
 #include "logmsg.h"
 
 typedef void *hash_kfnd_t(hash_t *const h, const void *const restrict vkey);

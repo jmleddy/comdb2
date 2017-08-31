@@ -29,11 +29,11 @@
 #include <plhash.h>
 #include <dlmalloc.h>
 #include <thdpool.h>
-#include <mem_berkdb.h>
 #include <sys/time.h>
 
 #ifndef COMDB2AR
-#include <mem_override.h>
+#include "mem_berkdb.h"
+#include "mem_override.h"
 #endif
 
 #include <netinet/in.h>

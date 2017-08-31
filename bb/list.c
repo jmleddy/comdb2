@@ -21,7 +21,6 @@
 #include <bb_inttypes.h>
 
 #include "mem_bb.h"
-#include "mem_override.h"
 #include "logmsg.h"
 
 typedef struct linkc_t {

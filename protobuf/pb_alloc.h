@@ -4,6 +4,12 @@
 #include <google/protobuf-c/protobuf-c.h> /* for ProtobufCAllocator */
 #include "mem_protobuf.h" /* for comdb2_malloc_protobuf */
 
+#ifdef USE_SYS_ALLOC
+#include <stdlib.h>
+#define comdb2_malloc_protobuf malloc
+#define comdb2_free_protobuf free
+#endif /* !USE_SYS_MALLOC */
+
 extern comdb2bma blobmem;
 extern unsigned gbl_blob_sz_thresh_bytes;
 
@@ -23,3 +29,4 @@ static ProtobufCAllocator pb_alloc = {
 };
 
 #endif
+
