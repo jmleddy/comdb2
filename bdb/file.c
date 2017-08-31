@@ -1790,9 +1790,8 @@ void berkdb_receive_msg(void *ack_handle, void *usr_ptr, char *from_host,
                         int usertype, void *dta, int dtalen, uint8_t is_tcp);
 
 void *watcher_thread(void *arg);
-void *checkpoint_thread(void *arg);
+void *checkpoint_trickle_thread(void *arg);
 void *logdelete_thread(void *arg);
-void *memp_trickle_thread(void *arg);
 void *deadlockdetect_thread(void *arg);
 
 void make_lsn(DB_LSN *logseqnum, unsigned int filenum, unsigned int offsetnum)
@@ -5613,26 +5612,10 @@ bdb_open_int(int envonly, const char name[], const char dir[], int lrl,
               log files to the database files, allowing us to remove
               log files.
               */
-            rc = pthread_create(&(bdb_state->checkpoint_thread), NULL,
-                                checkpoint_thread, bdb_state);
+            rc = pthread_create(&(bdb_state->checkpoint_trickle_thread), NULL,
+                                checkpoint_trickle_thread, bdb_state);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "unable to create checkpoint thread - rc=%d "
-                                "errno=%d %s\n",
-                        rc, errno, strerror(errno));
-                *bdberr = BDBERR_MISC;
-                return NULL;
-            }
-
-            /*
-              create memp_trickle_thread.
-              this thread tries to keep a certain amount of memory free
-              so that a read can be done without incurring a last minute
-              write in an effort to make memory available for the read
-              */
-            rc = pthread_create(&(bdb_state->memp_trickle_thread), NULL,
-                                memp_trickle_thread, bdb_state);
-            if (rc != 0) {
-                logmsg(LOGMSG_ERROR, "unable to create memp_trickle thread - rc=%d "
                                 "errno=%d %s\n",
                         rc, errno, strerror(errno));
                 *bdberr = BDBERR_MISC;
