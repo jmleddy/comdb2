@@ -167,7 +167,6 @@
 #include "decNumberLocal.h"        // decNumber local types, etc.
 
 #include "mem_dfp_decNumber.h"     // for trackable malloc
-#include "mem_override.h"          // override system malloc, free etc.
 
 /* Constants */
 // Public lookup table used by the D2U macro
@@ -8047,7 +8046,6 @@ static void decCheckInexact(const decNumber *dn, decContext *set) {
 #if DECALLOC
 #undef malloc
 #undef free
-#include <mem_override.h>
 /* ------------------------------------------------------------------ */
 /* decMalloc -- accountable allocation routine                        */
 /*   n is the number of bytes to allocate                             */

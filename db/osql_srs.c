@@ -14,7 +14,8 @@
    limitations under the License.
  */
 
-#include <list.h>
+#include "list.h"
+#include "mem_uncategorized.h"
 #include "pb_alloc.h"
 #include "comdb2.h"
 #include "sql.h"

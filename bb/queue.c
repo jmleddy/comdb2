@@ -20,7 +20,6 @@
 #include "pool.h"
 #include "list.h"
 #include "mem_bb.h"
-#include "mem_override.h"
 
 typedef struct {
     LISTC_T(struct queue_entry_tag) lst;

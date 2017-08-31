@@ -75,7 +75,7 @@ __os_umalloc(dbenv, size, storep)
 		else if (dbenv != NULL && size > dbenv->bmaszthresh)
 			*(void **)storep = comdb2_bmalloc(dbenv->bma, size);
 		else
-			*(void **)storep = comdb2_malloc_berkdb(size);
+			*(void **)storep = malloc(size);
 		if (*(void **)storep == NULL) {
 			/*
 			 *  Correct error return, see __os_malloc.
@@ -129,7 +129,7 @@ __os_urealloc(dbenv, size, storep)
 		else if (dbenv != NULL && dbenv->use_sys_malloc)
 			*(void **)storep = realloc(ptr, size);
 		else
-			*(void **)storep = comdb2_realloc_berkdb(ptr, size);
+			*(void **)storep = realloc(ptr, size);
 		if (*(void **)storep == NULL) {
 			/*
 			 * Correct errno, see __os_realloc.
@@ -170,7 +170,7 @@ __os_ufree(dbenv, ptr)
 	else if (DB_GLOBAL(j_free) != NULL)
 		DB_GLOBAL(j_free) (ptr);
 	else
-		comdb2_free_berkdb(ptr);
+		free(ptr);
 }
 
 /*
@@ -259,7 +259,7 @@ __os_malloc(dbenv, size, storep)
 	else if (dbenv != NULL && size > dbenv->bmaszthresh)
 		p = comdb2_bmalloc(dbenv->bma, size);
 	else
-		p = comdb2_malloc_berkdb(size);
+		p = malloc(size);
 	if (p == NULL) {
 		/*
 		 * Some C libraries don't correctly set errno when malloc(3)
@@ -336,7 +336,7 @@ __os_realloc(dbenv, size, storep)
 	else if (dbenv != NULL && dbenv->use_sys_malloc)
 		p = realloc(ptr, size);
 	else
-		p = comdb2_realloc_berkdb(ptr, size);
+		p = realloc(ptr, size);
 	if (p == NULL) {
 		/*
 		 * Some C libraries don't correctly set errno when malloc(3)
@@ -398,7 +398,7 @@ __os_free(dbenv, ptr)
 	if (DB_GLOBAL(j_free) != NULL)
 		DB_GLOBAL(j_free)(ptr);
 	else
-		comdb2_free_berkdb(ptr);
+		free(ptr);
 }
 
 #ifdef DIAGNOSTIC

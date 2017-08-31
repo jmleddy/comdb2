@@ -95,8 +95,7 @@
 #include "rtcpu.h"
 
 #include "mem_net.h"
-#include "mem_override.h"
-#include <bdb_net.h>
+#include "bdb_net.h"
 
 #include "debug_switches.h"
 
@@ -678,11 +677,7 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
    netinfo_ptr->service, sizeof(write_data) + datasz);
 */
 
-#ifdef PER_THREAD_MALLOC
-        insert = malloc(sizeof(write_data) + datasz);
-#else
-        insert = comdb2_malloc(host_node_ptr->msp, sizeof(write_data) + datasz);
-#endif
+        insert = malloc_pt(host_node_ptr->msp, sizeof(write_data) + datasz);
         if (insert == NULL) {
             logmsg(LOGMSG_ERROR, "%s: mspace out of memory datasz=%u\n", __func__,
                     (unsigned)datasz);
@@ -1114,11 +1109,7 @@ static int empty_write_list(host_node_type *host_node_ptr)
             pool_relablk(host_node_ptr->write_pool, nxt);
             Pthread_mutex_unlock(&(host_node_ptr->pool_lock));
         } else {
-#ifdef PER_THREAD_MALLOC
             free(nxt);
-#else
-            comdb2_free(nxt);
-#endif
         }
 
         nxt = ptr;
@@ -4269,11 +4260,7 @@ static void *writer_thread(void *args)
                     pool_relablk(host_node_ptr->write_pool, write_list_back);
                     Pthread_mutex_unlock(&(host_node_ptr->pool_lock));
                 } else {
-#ifdef PER_THREAD_MALLOC
                     free(write_list_back);
-#else
-                    comdb2_free(write_list_back);
-#endif
                 }
             }
             /* we seem to set nodelay on virtually every message.  try to get

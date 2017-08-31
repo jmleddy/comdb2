@@ -63,11 +63,6 @@ static inline int  comdb2_attach___HIGHMIKE__(comdb2ma alloc)
 #  define MAKE_FUNC_NAME_INT(func, subsystem) comdb2 ## func ## subsystem
 #  define MAKE_FUNC_NAME_EVAL(func, subsystem) MAKE_FUNC_NAME_INT(func, subsystem)
 #  define MAKE_FUNC_NAME(func) MAKE_FUNC_NAME_EVAL(_##func##_, __MY_STATIC_MA_NAME__)
-#  else /* !USE_SYS_ALLOC */
-#  include <stdlib.h>
-#  define comdb2_malloc___HIGHMIKE__  malloc
-#  define comdb2_calloc___HIGHMIKE__  calloc
-#  define comdb2_realloc___HIGHMIKE__ realloc
-#  define comdb2_free___HIGHMIKE__    free
-#  define comdb2_strdup___HIGHMIKE__  strdup
-#endif /* USE_SYS_ALLOC */
+#endif /* !USE_SYS_ALLOC */
+
+#include "mem_override.h"

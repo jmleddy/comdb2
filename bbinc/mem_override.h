@@ -32,4 +32,13 @@
 #define strndup MAKE_FUNC_NAME(strndup)
 #define malloc_trim MAKE_FUNC_NAME(malloc_trim)
 #define malloc_usable_size comdb2_malloc_usable_size
+
+#ifdef PER_THREAD_MALLOC
+#define malloc_pt(cm, size) MAKE_FUNC_NAME(malloc)(size)
+#else
+#define malloc_pt(cm, size) comdb2_malloc(cm, size)
+#endif
+
+#else
+#define malloc_pt(cm, size) malloc(size)
 #endif

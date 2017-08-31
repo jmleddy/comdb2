@@ -108,8 +108,7 @@ typedef long long tranid_t;
 #include "tunables.h"
 
 #ifndef LUASP
-#include <mem_uncategorized.h>
-#include <mem_override.h>
+#include "mem_uncategorized.h"
 #endif
 
 #include <trigger.h>

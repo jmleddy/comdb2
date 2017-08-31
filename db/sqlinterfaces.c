@@ -49,6 +49,7 @@
 #include <sbuf2.h>
 #include <bdb_api.h>
 
+#include "mem_uncategorized.h"
 #include "pb_alloc.h"
 #include "comdb2.h"
 #include "types.h"

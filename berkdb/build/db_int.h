@@ -524,9 +524,9 @@ struct __vrfy_pageinfo; typedef struct __vrfy_pageinfo VRFY_PAGEINFO;
 
 int __checkpoint_verify(DB_ENV *);
 
-#include <mem_berkdb.h>
 #ifndef COMDB2AR
-#include <mem_override.h>
+#include "mem_berkdb.h"
+#include "mem_override.h"
 #endif
 
 /* Perfect checkpoints */
