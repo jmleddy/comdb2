@@ -283,7 +283,7 @@ int berkdb_lock_random_rowlock(bdb_state_type *bdb_state, int lid, int flags,
         if (gbl_disable_rowlocks_sleepns) {
             struct timespec ts = {0};
             ts.tv_nsec = gbl_disable_rowlocks_sleepns;
-            comdb2_nanosleep(&ts);
+            nanosleep(&ts, NULL);
         }
         return 0;
     }
@@ -304,7 +304,7 @@ int berkdb_lock_rowlock(bdb_state_type *bdb_state, int lid, int flags,
         if (gbl_disable_rowlocks_sleepns) {
             struct timespec ts = {0};
             ts.tv_nsec = gbl_disable_rowlocks_sleepns;
-            comdb2_nanosleep(&ts);
+            nanosleep(&ts, NULL);
         }
         return 0;
     }
