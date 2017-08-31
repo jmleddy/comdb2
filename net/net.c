@@ -4011,15 +4011,19 @@ int net_send_decom_me_all(netinfo_type *netinfo_ptr)
     return outrc;
 }
 
-
-static int process_decom_name(netinfo_type *netinfo_ptr,
-                              host_node_type *host_node_ptr)
+static int read_decom_name_payload(read_data *read_data_ptr)
 {
-    int hostlen;
-    char *host, *ihost;
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    SBUF2 *sb;
+    int len;
     int rc;
 
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, &hostlen,
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    sb = host_node_ptr->sb;
+
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb, &len,
                      sizeof(int));
     if (rc != sizeof(int)) {
         logmsg(LOGMSG_ERROR, "%s:err from read_stream "
@@ -4027,26 +4031,43 @@ static int process_decom_name(netinfo_type *netinfo_ptr,
                 __func__, rc);
         return -1;
     }
-    hostlen = ntohl(hostlen);
-    host = malloc(hostlen);
-    if (host == NULL) {
+    len = ntohl(len);
+
+    read_data_ptr->payload = malloc_pt(host_node_ptr->msp,
+				       len + sizeof(int));
+    if (read_data_ptr->payload == NULL) {
         logmsg(LOGMSG_ERROR, "%s:err can't allocate %d bytes for hostname\n",
-                __func__, hostlen);
+                __func__, len);
         return -1;
     }
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, host,
-                     hostlen);
-    if (rc != hostlen) {
+    memcpy(read_data_ptr->payload, &len, sizeof(int));
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb,
+                     read_data_ptr->payload + sizeof(int), len);
+    if (rc != len) {
         logmsg(LOGMSG_ERROR, "%s:err from read_stream "
                         "attempting to read host, rc=%d",
                 __func__, rc);
-        free(host);
+        free(read_data_ptr->payload);
         return -1;
     }
-    ihost = intern(host);
-    free(host);
+
+    return 0;
+}
+
+static int process_decom_name(read_data *read_data_ptr)
+{
+    netinfo_type *netinfo_ptr;
+    int hostlen;
+    char *host, *ihost;
+    int rc;
+
+    netinfo_ptr = read_data_ptr->host_node_ptr->netinfo_ptr;
+    /* first int is the length */
+    ihost = intern(read_data_ptr->payload + sizeof(int)); 
+    
     net_decom_node(netinfo_ptr, ihost);
     run_net_decom_node_delayed(netinfo_ptr, ihost);
+    free(read_data_ptr->payload);
 
     return 0;
 }
@@ -4389,7 +4410,8 @@ static void *reader_thread(void *arg)
             break;
 
         case WIRE_HEADER_DECOM_NAME:
-            rc = process_decom_name(netinfo_ptr, host_node_ptr);
+            rc = read_decom_name_payload(read_data_ptr);
+            rc = process_decom_name(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: decom error from host %s\n",
                         host_node_ptr->host);
