@@ -107,7 +107,6 @@ static void dump_node(netinfo_type *netinfo_ptr, FILE *out, char *host)
         if (strcmp(ptr->host, host) == 0) {
             fprintf(out, "== NODE DUMP FOR %s ==\n", ptr->host);
             basic_node_data(ptr, out);
-            fprintf(out, "dedupe_count: %u\n", ptr->dedupe_count);
             Pthread_mutex_lock(&(ptr->enquelk));
             fprintf(out, "write list %u items %u bytes:\n", ptr->enque_count,
                     ptr->enque_bytes);

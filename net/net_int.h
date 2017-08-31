@@ -172,8 +172,6 @@ struct host_node_tag {
     unsigned peak_enque_bytes;
     unsigned peak_enque_bytes_time;
 
-    unsigned dedupe_count;
-
     struct in_addr addr;
     int addr_len;
     int distress; /* if this is set, do not report any errors, we know we're
