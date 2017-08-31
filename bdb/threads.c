@@ -98,64 +98,6 @@ void *udpbackup_and_autoanalyze_thd(void *arg)
     return NULL;
 }
 
-void *memp_trickle_thread(void *arg)
-{
-    unsigned int time;
-    bdb_state_type *bdb_state;
-    int nwrote;
-    int rc;
-
-    bdb_state = (bdb_state_type *)arg;
-
-    if (bdb_state->parent)
-        bdb_state = bdb_state->parent;
-
-    while (!bdb_state->after_llmeta_init_done)
-        sleep(1);
-
-    thread_started("bdb memptrickle");
-
-    bdb_thread_event(bdb_state, 1);
-
-    while (!bdb_state->passed_dbenv_open)
-        sleep(1);
-
-    while (1) {
-        int t1, t2;
-
-        BDB_READLOCK("memp_trickle_thread");
-
-        if (db_is_stopped()) {
-            logmsg(LOGMSG_DEBUG, "memp_trickle_thread: exiting\n");
-
-            BDB_RELLOCK();
-            bdb_thread_event(bdb_state, 0);
-            pthread_exit(NULL);
-        }
-
-        /* time is in usecs, memptricklemsecs is in msecs */
-        time = bdb_state->attr->memptricklemsecs * 1000;
-
-    again:
-        rc = bdb_state->dbenv->memp_trickle(
-            bdb_state->dbenv, bdb_state->attr->memptricklepercent, &nwrote, 1);
-        if (rc == 0) {
-            if (rc == DB_LOCK_DESIRED) {
-                BDB_RELLOCK();
-                sleep(1);
-                BDB_READLOCK("memp_trickle_thread");
-            }
-            if (nwrote != 0) {
-                goto again;
-            }
-        }
-
-        BDB_RELLOCK();
-
-        usleep(time);
-    }
-}
-
 void *deadlockdetect_thread(void *arg)
 {
     bdb_state_type *bdb_state;
@@ -376,24 +318,24 @@ void *logdelete_thread(void *arg)
 extern int gbl_rowlocks;
 extern unsigned long long osql_log_time(void);
 
-void *checkpoint_thread(void *arg)
+void *checkpoint_trickle_thread(void *arg)
 {
     int rc;
     int checkpointtime;
     int checkpointtimepoll;
-    int checkpointrand;
     bdb_state_type *bdb_state;
     int start, end;
-    int total_sleep_msec;
     unsigned long long end_sleep_time_msec;
     unsigned long long crt_time_msec;
     DB_LSN logfile;
     DB_LSN crtlogfile;
-    int broken;
+    int      broken;
+    int      period;
+    int      trickle_time;
+    int      nwrote;
+    int      i;
 
     thread_started("bdb checkpoint");
-
-    bdb_state = (bdb_state_type *)arg;
 
     bdb_state = (bdb_state_type *)arg;
 
@@ -405,11 +347,16 @@ void *checkpoint_thread(void *arg)
 
     bdb_thread_event(bdb_state, 1);
 
+    /* Figure out how many trickles we want to do per checkpoint */
+    BDB_READLOCK("checkpoint_trickle_thread");
+    checkpointtime = bdb_state->attr->checkpointtime;
+    checkpointtimepoll = bdb_state->attr->checkpointtimepoll;
+    trickle_time = bdb_state->attr->memptricklemsecs * 1000;
+    /* time in ms / trickle = how many times to trickle before checkpoint */
+    period = trickle_time ? (checkpointtime * 1000 / trickle_time) : 0;
+    i = 0;
+
     while (1) {
-        BDB_READLOCK("checkpoint_thread");
-        checkpointtime = bdb_state->attr->checkpointtime;
-        checkpointrand = bdb_state->attr->checkpointrand;
-        checkpointtimepoll = bdb_state->attr->checkpointtimepoll;
 
         broken = bdb_state->dbenv->log_get_last_lsn(bdb_state->dbenv, &logfile);
         if (broken) {
@@ -433,9 +380,19 @@ void *checkpoint_thread(void *arg)
             continue;
         }
 
-        /* Record the start time of the checkpoint operation.  If the checkpoint
-         * hangs (this has happened) then another thread will use this to raise
-         * an alarm. */
+        /* Trickle first */
+        if (period && i++ < period) {
+            bdb_state->dbenv->memp_trickle(bdb_state->dbenv,
+               bdb_state->attr->memptricklepercent, &nwrote, 1);
+            usleep(trickle_time);
+            continue;
+        }
+        i = 0;
+
+        /* Checkpoint second 
+         * and record the start time of the checkpoint operation.  If
+         * the checkpoint hangs (this has happened) then another thread
+         * will use this to raise an alarm. */
         start = time_epochms();
         bdb_state->checkpoint_start_time = time_epoch();
         MEMORY_SYNC;
@@ -452,15 +409,13 @@ void *checkpoint_thread(void *arg)
 
         BDB_RELLOCK();
 
-        total_sleep_msec = 1000 * (checkpointtime + (rand() % checkpointrand));
-
         if (broken) {
-            sleep(total_sleep_msec / 1000);
+            usleep(trickle_time);
         } else {
-            if (checkpointtimepoll > total_sleep_msec) {
-                checkpointtimepoll = total_sleep_msec;
+            if (checkpointtimepoll > trickle_time * 1000) {
+                checkpointtimepoll = trickle_time * 1000;
             }
-            end_sleep_time_msec = osql_log_time() + total_sleep_msec;
+            end_sleep_time_msec = osql_log_time() + trickle_time * 1000;
             crt_time_msec = 0;
 
             do {
@@ -468,7 +423,7 @@ void *checkpoint_thread(void *arg)
                     checkpointtimepoll = end_sleep_time_msec - crt_time_msec;
                 }
 
-                poll(0, 0, checkpointtimepoll);
+                usleep(trickle_time);
 
                 BDB_READLOCK("checkpoint_thread2");
                 broken = bdb_state->dbenv->log_get_last_lsn(bdb_state->dbenv,
@@ -484,6 +439,7 @@ void *checkpoint_thread(void *arg)
                 crt_time_msec = osql_log_time();
             } while (crt_time_msec < end_sleep_time_msec);
         }
+        BDB_READLOCK("checkpoint_trickle_thread");
     }
 }
 
