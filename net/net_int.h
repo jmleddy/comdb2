@@ -251,6 +251,7 @@ struct netinfo_struct {
     pthread_rwlock_t lock;
     pthread_mutex_t watchlk;
     pthread_mutex_t sanclk;
+    pthread_mutex_t pmuxlk;
     pthread_t accept_thread_id;
     pthread_t heartbeat_send_thread_id;
     pthread_t heartbeat_check_thread_id;
