@@ -61,16 +61,16 @@ static void basic_node_data(struct host_node_tag *ptr, FILE *out)
         fprintf(out, " rd_thd");
     if (ptr->have_writer_thread)
         fprintf(out, " wr_thd");
-    if (ptr->decom_flag)
+    if (ptr->state_flags & NET_STATE_DECOM)
         fprintf(out, " decom");
+    if (ptr->state_flags & NET_STATE_CLOSED)
+        fprintf(out, " closed");
+    if (ptr->state_flags & NET_STATE_REALLY_CLOSED)
+        fprintf(out, " really_closed");
     if (ptr->got_hello)
         fprintf(out, " hello");
     if (ptr->running_user_func)
         fprintf(out, " userfunc");
-    if (ptr->closed)
-        fprintf(out, " closed");
-    if (ptr->really_closed)
-        fprintf(out, " really_closed");
     if (ptr->distress)
         fprintf(out, " DISTRESS!");
     fprintf(out, "\n");

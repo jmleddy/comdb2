@@ -513,9 +513,9 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
     if (host_node_ptr->netinfo_ptr->exiting)
         return;
 
-    if (!host_node_ptr->closed) /* only close a node once */
-    {
-        host_node_ptr->closed = 1;
+    /* only close a node once */
+    if (!(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
+        host_node_ptr->state_flags |= NET_STATE_CLOSED;
 
         shutdown_hostnode_socket(host_node_ptr);
 
@@ -561,7 +561,7 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
             host_node_ptr->fd = -1;
         }
 
-        host_node_ptr->really_closed = 1;
+        host_node_ptr->state_flags |= NET_STATE_REALLY_CLOSED;
     }
 }
 
@@ -1685,8 +1685,9 @@ static void net_throttle_wait_loop(netinfo_type *netinfo_ptr,
     Pthread_mutex_lock(&(host_ptr->throttle_lock));
     host_ptr->throttle_waiters++;
 
-    while (!host_ptr->closed && ((host_ptr->enque_count > queue_threshold) ||
-                                 (host_ptr->enque_bytes > byte_threshold)))
+    while (!(host_ptr->state_flags & NET_STATE_CLOSED) &&
+           ((host_ptr->enque_count > queue_threshold) ||
+            (host_ptr->enque_bytes > byte_threshold)))
 
     {
         struct timespec waittime;
@@ -1747,8 +1748,9 @@ int net_throttle_wait(netinfo_type *netinfo_ptr)
     /* let 1 message always slip in */
     if (ptr && ptr->enque_count) {
         while (ptr) {
-            if (!ptr->closed && ((ptr->enque_count > queue_threshold) ||
-                                 (ptr->enque_bytes > byte_threshold))) {
+            if (!(ptr->state_flags & NET_STATE_CLOSED) &&
+                ((ptr->enque_count > queue_threshold) ||
+                 (ptr->enque_bytes > byte_threshold))) {
                 cnt++;
                 net_throttle_wait_loop(netinfo_ptr, ptr, queue_threshold,
                                        byte_threshold);
@@ -1827,7 +1829,7 @@ int net_send_message_payload_ack(netinfo_type *netinfo_ptr, const char *to_host,
     }
 
     /* fail if we are closed */
-    if (host_node_ptr->closed) {
+    if (host_node_ptr->state_flags & NET_STATE_CLOSED) {
         rc = NET_SEND_FAIL_CLOSED;
         goto end;
     }
@@ -2294,7 +2296,7 @@ int net_get_all_commissioned_nodes(netinfo_type *netinfo_ptr,
         if (ptr->host == netinfo_ptr->myhostname)
             continue;
 
-        if (!ptr->decom_flag) {
+        if (!(ptr->state_flags & NET_STATE_DECOM)) {
             hostlist[count++] = ptr->host;
             if (count >= REPMAX)
                 break;
@@ -2579,8 +2581,7 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
     memset(ptr, 0, sizeof(host_node_type));
 
     ptr->netinfo_ptr = netinfo_ptr;
-    ptr->closed = 1;
-    ptr->really_closed = 1;
+    ptr->state_flags |= NET_STATE_CLOSED | NET_STATE_REALLY_CLOSED;
     ptr->fd = -1;
 
     ptr->next = netinfo_ptr->head;
@@ -3804,7 +3805,7 @@ static void net_decom_self(netinfo_type *netinfo_ptr)
     Pthread_rwlock_rdlock(&(netinfo_ptr->lock));
     if (netinfo_ptr->exiting) {
         for (ptr = netinfo_ptr->head; ptr != NULL; ptr = ptr->next)
-            ptr->decom_flag = 1;
+            ptr->state_flags |= NET_STATE_DECOM;
         decomed = 1;
     }
     Pthread_rwlock_unlock(&(netinfo_ptr->lock));
@@ -3842,7 +3843,7 @@ void net_decom_node(netinfo_type *netinfo_ptr, const char *host)
         else
             host_back->next = host_ptr->next;
 
-        host_ptr->decom_flag = 1;
+        host_ptr->state_flags |= NET_STATE_DECOM;
 
         logmsg(LOGMSG_DEBUG, "net_decom_node %s for %s setting decom_flag\n",
                 netinfo_ptr->service, host);
@@ -4078,7 +4079,7 @@ int net_send_decom_me_all(netinfo_type *netinfo_ptr)
         rc = net_send_message(netinfo_ptr, hosts[i], TYPE_DECOM_NAME,
                               (void *)decom_host, hostlen, 1, 5000);
         if (host_node_ptr)
-            host_node_ptr->decom_flag = 1;
+            host_node_ptr->state_flags |= NET_STATE_DECOM;
         if (rc < 0) {
             outrc++;
             logmsg(LOGMSG_ERROR, "error sending decom to %s rc=%d\n", hosts[i], rc);
@@ -4185,7 +4186,8 @@ static void shutdown_other_hostnodes(host_node_type *host_node_ptr)
     LISTC_FOR_EACH_SAFE(&nets_list, curpos, tmppos, lnk)
     {
         ptr = get_host_node_by_name_ll(curpos->netinfo_ptr, hostname);
-        if (ptr && (ptr != host_node_ptr) && !ptr->closed) {
+        if (ptr && (ptr != host_node_ptr) &&
+            !(ptr->state_flags & NET_STATE_CLOSED)) {
             logmsg(LOGMSG_INFO, "Shutting down socket for %s\n", ptr->host);
             shutdown_hostnode_socket(ptr);
         }
@@ -4222,8 +4224,8 @@ static void *writer_thread(void *args)
 
     Pthread_mutex_lock(&(host_node_ptr->enquelk));
 
-    while (!host_node_ptr->decom_flag && !host_node_ptr->closed &&
-           !netinfo_ptr->exiting) {
+    while (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
+				      (NET_STATE_DECOM | NET_STATE_CLOSED))) {
         while (host_node_ptr->write_head != NULL) {
             unsigned count, bytes;
             int start_time, end_time, diff_time;
@@ -4250,7 +4252,8 @@ static void *writer_thread(void *args)
             while (write_list_ptr != NULL) {
                 /* stop writing if we've hit an error or if we've disconnected
                  */
-                if (!host_node_ptr->closed && rc >= 0) {
+                if (rc >= 0 &&
+                    !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
                     int age;
                     wire_header_type *wire_header, tmp_wire_hdr;
                     uint8_t *p_buf, *p_buf_end;
@@ -4374,7 +4377,7 @@ done:
         host_node_printf(LOGMSG_DEBUG, host_node_ptr, "%s exiting\n", __func__);
     /* Check if failure is not during connection setup. */
     if (((time_epoch() - th_start_time) > netinfo_ptr->heartbeat_check_time) &&
-        !host_node_ptr->closed) {
+        !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
         /* Close other sockets related to this hostname */
         shutdown_other_hostnodes(host_node_ptr);
     }
@@ -4541,8 +4544,8 @@ static void *reader_thread(void *arg)
     if (netinfo_ptr->start_thread_callback)
         netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
 
-    while (!host_node_ptr->decom_flag && !host_node_ptr->closed &&
-           !netinfo_ptr->exiting) {
+    while (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
+				      (NET_STATE_DECOM | NET_STATE_CLOSED))) {
         host_node_ptr->timestamp = time(NULL);
 
         if (netinfo_ptr->trace && debug_switch_net_verbose())
@@ -4660,7 +4663,7 @@ done:
         host_node_printf(LOGMSG_INFO, host_node_ptr, "%s exiting\n", __func__);
     /* Check if failure is not during connection setup. */
     if (((time_epoch() - th_start_time) > netinfo_ptr->heartbeat_check_time) &&
-        !host_node_ptr->closed) {
+        !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
         /* Close other sockets related to this hostname */
         shutdown_other_hostnodes(host_node_ptr);
     }
@@ -4833,10 +4836,11 @@ static void *connect_thread(void *arg)
     if (netinfo_ptr->start_thread_callback)
         netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
 
-    while (!host_node_ptr->decom_flag && !netinfo_ptr->exiting) {
+    while (!netinfo_ptr->exiting &&
+	   !(host_node_ptr->state_flags & NET_STATE_DECOM)) {
         Pthread_mutex_lock(&(host_node_ptr->lock));
 
-        if (!host_node_ptr->really_closed) {
+        if (!(host_node_ptr->state_flags & NET_STATE_REALLY_CLOSED)) {
             goto again;
         }
 
@@ -5046,8 +5050,8 @@ static void *connect_thread(void *arg)
            heartbeat out before we get the connect message out
         */
         host_node_ptr->fd = fd;
-        host_node_ptr->really_closed = 0;
-        host_node_ptr->closed = 0;
+        host_node_ptr->state_flags &=
+            ~NET_STATE_CLOSED & ~NET_STATE_REALLY_CLOSED;
 
         /* wake writer, if exists */
         pthread_cond_signal(&(host_node_ptr->write_wakeup));
@@ -5077,8 +5081,8 @@ static void *connect_thread(void *arg)
             sleep(15);
     }
 
-    if (host_node_ptr->decom_flag)
-        logmsg(LOGMSG_INFO, "connect_thread: host_node_ptr->decom_flag set for host %s\n",
+    if (host_node_ptr->state_flags & NET_STATE_DECOM)
+        logmsg(LOGMSG_INFO, "connect_thread: NET_STATE_DECOM set for host %s\n",
                 host_node_ptr->host);
     else
         host_node_printf(LOGMSG_INFO, host_node_ptr, "connect_thread: netinfo->exiting\n");
@@ -5227,7 +5231,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     }
 
     /* this host's connect thread is exiting- don't race against it */
-    if (host_node_ptr->decom_flag) {
+    if (host_node_ptr->state_flags & NET_STATE_DECOM) {
         host_node_printf(LOGMSG_INFO, host_node_ptr,
                          "%s: node being decom'd- reject incoming connection\n",
                          __func__);
@@ -5317,8 +5321,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
         host_node_errf(LOGMSG_USER, host_node_ptr, "%s: accepting connection on new_fd %d\n",
                        __func__, new_fd);
 
-    host_node_ptr->really_closed = 0;
-    host_node_ptr->closed = 0;
+    host_node_ptr->state_flags &= ~NET_STATE_CLOSED & ~NET_STATE_REALLY_CLOSED;
     host_node_ptr->rej_up_cnt = 0;
 
     /* create reader & writer threads */
@@ -6039,8 +6042,7 @@ static int is_ok(netinfo_type *netinfo_ptr, const char *host)
              * stuff under lock. */
             int ok = 0;
             Pthread_mutex_lock(&(host_node_ptr->lock));
-            if (host_node_ptr->fd > 0 && !host_node_ptr->decom_flag &&
-                !host_node_ptr->closed && !host_node_ptr->really_closed) {
+            if (host_node_ptr->fd > 0 && !host_node_ptr->state_flags) {
                 ok = 1;
             }
             Pthread_mutex_unlock(&(host_node_ptr->lock));
