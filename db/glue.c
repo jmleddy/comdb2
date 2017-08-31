@@ -3878,11 +3878,6 @@ int open_bdb_env(struct dbenv *dbenv)
         if (gbl_maxreclen == 0)
             gbl_maxreclen = 512;
 
-#if 0
-        net_set_callback_data(dbenv->handle_sibling, dbenv);
-        net_register_start_thread_callback(dbenv->handle_sibling, comdb2_net_start_thread);
-        net_register_stop_thread_callback(dbenv->handle_sibling, comdb2_net_stop_thread);
-#endif
         for (ii = 1; ii < dbenv->nsiblings; ii++) {
             rcv = (void *)add_to_netinfo(
                 dbenv->handle_sibling, intern(dbenv->sibling_hostname[ii]),

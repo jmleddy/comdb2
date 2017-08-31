@@ -209,7 +209,6 @@ static int read_connect_message(SBUF2 *sb, char hostname[], int hostnamel,
                                 int *portnum, netinfo_type *netinfo_ptr);
 static void *accept_thread(void *arg);
 static void *heartbeat_send_thread(void *arg);
-static void *writer_thread(void *args);
 static void *reader_thread(void *arg);
 static void *connect_thread(void *arg);
 
@@ -451,6 +450,8 @@ static void shutdown_hostnode_socket(host_node_type *host_node_ptr)
     }
 }
 
+static void flush_writer_queue(host_node_type *host_node_ptr);
+
 /* This must be called while holding the host_node_ptr->lock.
  *
  * This will call shutdown() on the fd, which will cause the reader & writer
@@ -473,7 +474,7 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
         host_node_ptr->got_hello = 0;
 
         /* wake up the writer thread if it's asleep */
-        pthread_cond_signal(&(host_node_ptr->write_wakeup));
+        flush_writer_queue(host_node_ptr);
 
         /* call the hostdown routine if provided */
         if (host_node_ptr->netinfo_ptr->hostdown_rtn) {
@@ -491,8 +492,7 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
 
     /* If we have an fd or sbuf, and no reader or writer thread, then
      * close the socket properly */
-    if (host_node_ptr->have_reader_thread == 0 &&
-        host_node_ptr->have_writer_thread == 0) {
+    if (host_node_ptr->have_reader_thread == 0) {
         if (host_node_ptr->sb) {
             sbuf2close(host_node_ptr->sb);
             host_node_ptr->sb = NULL;
@@ -1219,7 +1219,7 @@ static int write_message_int(netinfo_type *netinfo_ptr,
 
     /* wake up the writer thread */
     if (flags & WRITE_MSG_NODELAY)
-        pthread_cond_signal(&(host_node_ptr->write_wakeup));
+        flush_writer_queue(host_node_ptr);
 
     return 0;
 }
@@ -1324,7 +1324,6 @@ static int read_message_header(netinfo_type *netinfo_ptr,
     wire_header->tonode = ntohl(wire_header->tonode);
     wire_header->type = ntohl(wire_header->type); 
 
-      /*    net_wire_header_get(wire_header, p_buf, p_buf_end);*/
     if (wire_header->fromhost[0] == '.') {
         wire_header->fromhost[HOSTNAME_LEN - 1] = 0;
         namelen = atoi(&wire_header->fromhost[1]);
@@ -2627,12 +2626,6 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
                 ptr->host);
         goto err;
     }
-    rc = pthread_cond_init(&(ptr->write_wakeup), NULL);
-    if (rc != 0) {
-        logmsg(LOGMSG_ERROR, "%s: couldn't init write_wakeup for node %s\n",
-                __func__, ptr->host);
-        goto err;
-    }
     rc = pthread_cond_init(&(ptr->throttle_wakeup), NULL);
     if (rc != 0) {
         logmsg(LOGMSG_ERROR, "%s: couldn't init throttle_wakeup for node %s\n",
@@ -2722,7 +2715,6 @@ static void rem_from_netinfo(netinfo_type *netinfo_ptr,
         pthread_mutex_destroy(&(host_node_ptr->throttle_lock));
 
         pthread_cond_destroy(&(host_node_ptr->ack_wakeup));
-        pthread_cond_destroy(&(host_node_ptr->write_wakeup));
         pthread_cond_destroy(&(host_node_ptr->throttle_wakeup));
 
         pool_free(host_node_ptr->write_pool);
@@ -4112,21 +4104,6 @@ static int create_reader_writer_threads(host_node_type *host_node_ptr,
         }
     }
 
-    /* make sure we have a writer thread */
-    if (!(host_node_ptr->have_writer_thread)) {
-        rc = pthread_create(&(host_node_ptr->writer_thread_id),
-                            &(host_node_ptr->netinfo_ptr->pthread_attr_detach),
-                            writer_thread, host_node_ptr);
-        if (rc != 0) {
-            host_node_errf(LOGMSG_ERROR, host_node_ptr,
-                           "%s: pthread_create writer_thread failed: %d %s\n",
-                           funcname, rc, strerror(rc));
-            return -1;
-        } else {
-            host_node_ptr->have_writer_thread = 1;
-        }
-    }
-
     return 0;
 }
 
@@ -4142,7 +4119,7 @@ static void shutdown_other_hostnodes(host_node_type *host_node_ptr)
         ptr = get_host_node_by_name_ll(curpos->netinfo_ptr, hostname);
         if (ptr && (ptr != host_node_ptr) &&
             !(ptr->state_flags & NET_STATE_CLOSED)) {
-            logmsg(LOGMSG_INFO, "Shutting down socket for %s\n", ptr->host);
+            logmsg(LOGMSG_INFO, "Shutting down socke for %s\n", ptr->host);
             shutdown_hostnode_socket(ptr);
         }
     }
@@ -4150,40 +4127,25 @@ static void shutdown_other_hostnodes(host_node_type *host_node_ptr)
 }
 
 
-static void *writer_thread(void *args)
+static void flush_writer_queue(host_node_type *host_node_ptr)
 {
     netinfo_type *netinfo_ptr;
-    host_node_type *host_node_ptr;
     write_data *write_list_ptr, *write_list_back;
     int rc, flags, maxage;
-    int th_start_time = time_epoch();
     struct timespec waittime;
 #ifndef HAS_CLOCK_GETTIME
     struct timeval tv;
 #endif
-    thread_started("net writer");
-
-    host_node_ptr = args;
     netinfo_ptr = host_node_ptr->netinfo_ptr;
 
-    host_node_ptr->writer_thread_arch_tid = getarchtid();
-    if (gbl_verbose_net)
-        host_node_printf(LOGMSG_DEBUG, host_node_ptr, "%s: starting tid=%d\n", __func__,
-                         host_node_ptr->writer_thread_arch_tid);
 
-    if (netinfo_ptr->start_thread_callback)
-        netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
-
-    rc = write_hello(netinfo_ptr, host_node_ptr);
-
-    Pthread_mutex_lock(&(host_node_ptr->enquelk));
-
-    while (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
-				      (NET_STATE_DECOM | NET_STATE_CLOSED))) {
-        while (host_node_ptr->write_head != NULL) {
+    if (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
+                                   (NET_STATE_DECOM | NET_STATE_CLOSED))) {
+        if (host_node_ptr->write_head != NULL) {
             unsigned count, bytes;
             int start_time, end_time, diff_time;
 
+            Pthread_mutex_lock(&(host_node_ptr->enquelk));
             /* grab the entire list and reset enqueue counters */
             write_list_back = write_list_ptr = host_node_ptr->write_head;
             host_node_ptr->write_head = host_node_ptr->write_tail = NULL;
@@ -4197,7 +4159,6 @@ static void *writer_thread(void *args)
 
             pthread_cond_broadcast(&(host_node_ptr->throttle_wakeup));
 
-            rc = 0;
             flags = 0;
             maxage = 0;
 
@@ -4206,8 +4167,7 @@ static void *writer_thread(void *args)
             while (write_list_ptr != NULL) {
                 /* stop writing if we've hit an error or if we've disconnected
                  */
-                if (rc >= 0 &&
-                    !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
+                if (!(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
                     int age;
                     wire_header_type *wire_header, tmp_wire_hdr;
                     uint8_t *p_buf, *p_buf_end;
@@ -4223,21 +4183,26 @@ static void *writer_thread(void *args)
 
                     wire_header = &write_list_ptr->payload.header;
                     /* endianize this */
-		    wire_header->fromport = htonl(wire_header->fromport);
-		    wire_header->fromnode = htonl(wire_header->fromnode);
-		    wire_header->toport = htonl(wire_header->toport);
-		    wire_header->tonode = htonl(wire_header->tonode);
-		    wire_header->type = htonl(wire_header->type);
-
-		    /*
-		    net_wire_header_put(&tmp_wire_hdr, p_buf, p_buf_end);*/
+                    wire_header->fromport = htonl(wire_header->fromport);
+                    wire_header->fromnode = htonl(wire_header->fromnode);
+                    wire_header->toport = htonl(wire_header->toport);
+                    wire_header->tonode = htonl(wire_header->tonode);
+                    wire_header->type = htonl(wire_header->type);
 
                     rc = write_stream(
                         netinfo_ptr, host_node_ptr, host_node_ptr->sb,
                         write_list_ptr->payload.raw, write_list_ptr->len);
-                    flags |= write_list_ptr->flags;
-                } else
+                    if (rc != write_list_ptr->len) {
+                        write_list_ptr->len -= rc;
+                        memmove(write_list_ptr->payload.raw,
+                                write_list_ptr->payload.raw + rc,
+                                write_list_ptr->len);
+                        break;
+                    }
+                } else {
                     rc = -1;
+                    break;
+                }
 
                 write_list_back = write_list_ptr;
                 write_list_ptr = write_list_ptr->next;
@@ -4273,51 +4238,18 @@ static void *writer_thread(void *args)
                                __func__, diff_time, count, bytes);
             }
 
-            Pthread_mutex_lock(&(host_node_ptr->enquelk));
             if (rc < 0) {
-                goto done;
+                Pthread_mutex_lock(&(host_node_ptr->lock));
+                if (gbl_verbose_net)
+                    host_node_printf(LOGMSG_DEBUG, host_node_ptr,
+                                     "%s bad send\n", __func__);
+                shutdown_other_hostnodes(host_node_ptr);
+                close_hostnode_ll(host_node_ptr);
+                Pthread_mutex_unlock(&(host_node_ptr->lock));
+
             }
         }
-
-#ifdef HAS_CLOCK_GETTIME
-        rc = clock_gettime(CLOCK_REALTIME, &waittime);
-#else
-        rc = gettimeofday(&tv, NULL);
-        timeval_to_timespec(&tv, &waittime);
-#endif
-        add_millisecs_to_timespec(&waittime, 5000);
-
-        pthread_cond_timedwait(&(host_node_ptr->write_wakeup),
-                               &(host_node_ptr->enquelk), &waittime);
-
-        /*
-           pthread_cond_wait(&(host_node_ptr->write_wakeup),
-           &(host_node_ptr->enquelk));
-         */
-
-        /*fprintf(stderr, "writer_thread: past pthread_cond_timedwait\n");*/
     }
-
-done:
-    Pthread_mutex_unlock(&(host_node_ptr->enquelk));
-
-    Pthread_mutex_lock(&(host_node_ptr->lock));
-    host_node_ptr->have_writer_thread = 0;
-    if (gbl_verbose_net)
-        host_node_printf(LOGMSG_DEBUG, host_node_ptr, "%s exiting\n", __func__);
-    /* Check if failure is not during connection setup. */
-    if (((time_epoch() - th_start_time) > netinfo_ptr->heartbeat_check_time) &&
-        !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
-        /* Close other sockets related to this hostname */
-        shutdown_other_hostnodes(host_node_ptr);
-    }
-    close_hostnode_ll(host_node_ptr);
-    Pthread_mutex_unlock(&(host_node_ptr->lock));
-
-    if (netinfo_ptr->stop_thread_callback)
-        netinfo_ptr->stop_thread_callback(netinfo_ptr->callback_data);
-
-    return NULL;
 }
 
 
@@ -4475,7 +4407,7 @@ static void *reader_thread(void *arg)
         netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
 
     while (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
-				      (NET_STATE_DECOM | NET_STATE_CLOSED))) {
+                                      (NET_STATE_DECOM | NET_STATE_CLOSED))) {
         host_node_ptr->timestamp = time(NULL);
 
         if (netinfo_ptr->trace && debug_switch_net_verbose())
@@ -4767,7 +4699,7 @@ static void *connect_thread(void *arg)
         netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
 
     while (!netinfo_ptr->exiting &&
-	   !(host_node_ptr->state_flags & NET_STATE_DECOM)) {
+           !(host_node_ptr->state_flags & NET_STATE_DECOM)) {
         Pthread_mutex_lock(&(host_node_ptr->lock));
 
         if (!(host_node_ptr->state_flags & NET_STATE_REALLY_CLOSED)) {
@@ -4983,8 +4915,6 @@ static void *connect_thread(void *arg)
         host_node_ptr->state_flags &=
             ~NET_STATE_CLOSED & ~NET_STATE_REALLY_CLOSED;
 
-        /* wake writer, if exists */
-        pthread_cond_signal(&(host_node_ptr->write_wakeup));
         Pthread_mutex_unlock(&(host_node_ptr->write_lock));
 
         if (gbl_verbose_net)
@@ -5023,8 +4953,7 @@ static void *connect_thread(void *arg)
     while (1) {
         int ref;
         Pthread_mutex_lock(&(host_node_ptr->lock));
-        ref = host_node_ptr->have_reader_thread +
-              host_node_ptr->have_writer_thread;
+        ref = host_node_ptr->have_reader_thread;
         Pthread_mutex_unlock(&(host_node_ptr->lock));
 
         Pthread_mutex_lock(&(host_node_ptr->throttle_lock));
@@ -5036,11 +4965,11 @@ static void *connect_thread(void *arg)
         if (ref == 0)
             break;
 
-        pthread_cond_signal(&(host_node_ptr->write_wakeup));
-        poll(NULL, 0, 1000);
+        flush_writer_queue(host_node_ptr);
+        sleep(1);
     }
 
-    poll(NULL, 0, 1000);
+    sleep(1);
 
     /* lock, unlink, free, damn it */
     rem_from_netinfo(netinfo_ptr, host_node_ptr);
