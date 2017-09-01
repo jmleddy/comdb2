@@ -3279,7 +3279,7 @@ inline int net_count_connected_nodes(netinfo_type *netinfo_ptr)
     return connected;
 }
 
-/* 
+/*
  * Reads the payload of hello messages.
  */
 static int read_hello_payload(read_data *read_data_ptr)
@@ -3516,26 +3516,49 @@ static int process_payload_ack(read_data *read_data_ptr)
     return 0;
 }
 
-static int process_ack(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr)
+static int read_ack_payload(read_data *read_data_ptr)
 {
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    SBUF2 *sb;
+    net_ack_message_type *p_net_ack_message;
     int rc;
-    int seqnum, outrc;
-    net_ack_message_type p_net_ack_message;
-    uint8_t buf[NET_ACK_MESSAGE_TYPE_LEN], *p_buf, *p_buf_end;
-    seq_data *ptr;
 
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, buf,
-                     NET_ACK_MESSAGE_TYPE_LEN);
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    sb = host_node_ptr->sb;
+
+    if ((read_data_ptr->payload = malloc(sizeof(net_ack_message_type))) == NULL)
+        return -1;
+
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb,
+                     read_data_ptr->payload, sizeof(net_ack_message_type));
     if (rc != NET_ACK_MESSAGE_TYPE_LEN)
         return -1;
 
-    p_buf = buf;
-    p_buf_end = buf + NET_ACK_MESSAGE_TYPE_LEN;
+    p_net_ack_message = (net_ack_message_type*)read_data_ptr->payload;
+    p_net_ack_message->seqnum = ntohl(p_net_ack_message->seqnum);
+    p_net_ack_message->outrc = ntohl(p_net_ack_message->outrc);
 
-    net_ack_message_type_get(&p_net_ack_message, p_buf, p_buf_end);
+    return 0;
+}
 
-    seqnum = p_net_ack_message.seqnum;
-    outrc = p_net_ack_message.outrc;
+static int process_ack(read_data *read_data_ptr)
+{
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    int rc;
+    int seqnum, outrc;
+    net_ack_message_type *p_net_ack_message;
+    uint8_t buf[NET_ACK_MESSAGE_TYPE_LEN], *p_buf, *p_buf_end;
+    seq_data *ptr;
+
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+
+    p_net_ack_message = (net_ack_message_type*)read_data_ptr->payload;
+    seqnum = p_net_ack_message->seqnum;
+    outrc = p_net_ack_message->outrc;
 
     Pthread_mutex_lock(&(host_node_ptr->wait_mutex));
 
@@ -4470,7 +4493,8 @@ static void *reader_thread(void *arg)
             break;
 
         case WIRE_HEADER_ACK:
-            rc = process_ack(netinfo_ptr, host_node_ptr);
+            rc = read_ack_payload(read_data_ptr);
+            rc = process_ack(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: ack error from host %s\n",
                         host_node_ptr->host);
