@@ -336,10 +336,9 @@ typedef struct net_ack_message_payload_type {
     int seqnum;
     int outrc;
     int paylen;
-    char payload[4];
 } net_ack_message_payload_type;
 
-enum { NET_ACK_MESSAGE_PAYLOAD_TYPE_LEN = 4 + 4 + 4 + 4 };
+enum { NET_ACK_MESSAGE_PAYLOAD_TYPE_LEN = 4 + 4 + 4 };
 
 BB_COMPILE_TIME_ASSERT(net_ack_message_payload_type,
                        sizeof(net_ack_message_payload_type) ==
@@ -350,8 +349,7 @@ static uint8_t *net_ack_message_payload_type_put(
     const uint8_t *p_buf_end)
 {
     if (p_buf_end < p_buf ||
-        (offsetof(net_ack_message_payload_type, payload) +
-         payload_type_ptr->paylen) > (p_buf_end - p_buf))
+        NET_ACK_MESSAGE_PAYLOAD_TYPE_LEN > (p_buf_end - p_buf))
         return NULL;
 
     p_buf = buf_put(&(payload_type_ptr->seqnum),
@@ -370,7 +368,7 @@ net_ack_message_payload_type_get(net_ack_message_payload_type *payload_type_ptr,
                                  const uint8_t *p_buf, const uint8_t *p_buf_end)
 {
     if (p_buf_end < p_buf ||
-        offsetof(net_ack_message_payload_type, payload) > (p_buf_end - p_buf))
+        NET_ACK_MESSAGE_PAYLOAD_TYPE_LEN > (p_buf_end - p_buf))
         return NULL;
 
     p_buf = buf_get(&(payload_type_ptr->seqnum),
@@ -1611,8 +1609,6 @@ static int remove_seqnum_from_waitlist(host_node_type *host_node_ptr,
         seq_list_ptr->payload = NULL;
         (*payloadlen) = seq_list_ptr->payloadlen;
     }
-    if (seq_list_ptr->payload)
-        free(seq_list_ptr->payload);
     free(seq_list_ptr);
 
     return outrc;
@@ -3395,7 +3391,7 @@ int net_ack_message_payload(void *handle, int outrc, void *payload,
     int rc = 0;
     ack_state_type *ack_state = handle;
 
-    int sz = offsetof(net_ack_message_payload_type, payload) + payloadlen;
+    int sz = sizeof(net_ack_message_payload_type);
 
     if (ack_state->needack) {
         Pthread_rwlock_rdlock(&(ack_state->netinfo->lock));
@@ -3431,38 +3427,67 @@ int net_ack_message_payload(void *handle, int outrc, void *payload,
     return rc;
 }
 
-static int process_payload_ack(netinfo_type *netinfo_ptr,
-                               host_node_type *host_node_ptr)
+static int read_payload_ack_payload(read_data *read_data_ptr)
 {
-    int rc;
-    int seqnum, outrc;
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    SBUF2 *sb;
     net_ack_message_payload_type p_net_ack_message_payload;
-    void *payload = NULL;
-    uint8_t *buf, *p_buf, *p_buf_end;
-    seq_data *ptr;
+    char *p_buf, *payload;
+    int rc;
 
-    buf = alloca(offsetof(net_ack_message_payload_type, payload));
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    sb = host_node_ptr->sb;
 
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, buf,
-                     offsetof(net_ack_message_payload_type, payload));
-    if (rc != offsetof(net_ack_message_payload_type, payload))
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb,
+                     &p_net_ack_message_payload,
+                     sizeof(net_ack_message_payload_type));
+    if (rc != sizeof(net_ack_message_payload_type))
         return -1;
 
-    p_buf = buf;
-    p_buf_end = buf + offsetof(net_ack_message_payload_type, payload);
-
-    net_ack_message_payload_type_get(&p_net_ack_message_payload, p_buf,
-                                     p_buf_end);
-
-    seqnum = p_net_ack_message_payload.seqnum;
-    outrc = p_net_ack_message_payload.outrc;
+    p_net_ack_message_payload.seqnum = ntohl(p_net_ack_message_payload.seqnum);
+    p_net_ack_message_payload.outrc = ntohl(p_net_ack_message_payload.outrc);
+    p_net_ack_message_payload.paylen = ntohl(p_net_ack_message_payload.paylen);
 
     if (p_net_ack_message_payload.paylen > 1024)
         return -1;
 
-    payload = mymalloc(p_net_ack_message_payload.paylen);
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, payload,
+    payload = malloc_pt(host_node_ptr->msp,
+                        sizeof(net_ack_message_payload_type) +
+                               p_net_ack_message_payload.paylen);
+    p_buf = payload + sizeof(net_ack_message_payload_type);
+    rc = read_stream(netinfo_ptr, host_node_ptr, sb, p_buf,
                      p_net_ack_message_payload.paylen);
+    if (rc != sizeof(net_ack_message_payload_type)) {
+        free(payload);
+        return -1;
+    }
+    memcpy(read_data_ptr->payload, &p_net_ack_message_payload,
+           sizeof(net_ack_message_payload_type));
+}
+
+static int process_payload_ack(read_data *read_data_ptr)
+{
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    int seqnum, outrc, paylen;
+    net_ack_message_payload_type *p_net_ack_message_payload;
+    void *payload = NULL;
+    uint8_t *p_buf, *p_buf_end;
+    seq_data *ptr;
+    int rc;
+
+
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    p_net_ack_message_payload = (net_ack_message_payload_type*)read_data_ptr;
+
+    seqnum = p_net_ack_message_payload->seqnum;
+    outrc = p_net_ack_message_payload->outrc;
+    paylen = p_net_ack_message_payload->paylen;
+
+    payload = p_net_ack_message_payload + sizeof(*p_net_ack_message_payload);
 
     Pthread_mutex_lock(&(host_node_ptr->wait_mutex));
 
@@ -3472,18 +3497,22 @@ static int process_payload_ack(netinfo_type *netinfo_ptr,
         ptr = ptr->next;
     }
 
-    if (ptr == NULL) {
-        free(payload);
-    } else {
+    if (ptr != NULL) {
         ptr->outrc = outrc;
-        ptr->payload = payload;
-        ptr->payloadlen = p_net_ack_message_payload.paylen;
+        ptr->payloadlen = paylen;
         ptr->ack = 1;
+
+        /* TODO get rid of this double copy */
+        if ((ptr->payload = malloc_pt(host_node_ptr->msp, paylen)) == NULL) {
+            free(read_data_ptr->payload);
+            return -1;
+        }
+        memcpy(ptr->payload, payload, paylen);
         pthread_cond_broadcast(&(host_node_ptr->ack_wakeup));
     }
-
     Pthread_mutex_unlock(&(host_node_ptr->wait_mutex));
 
+    free(read_data_ptr->payload);
     return 0;
 }
 
@@ -4030,7 +4059,7 @@ static int read_decom_name_payload(read_data *read_data_ptr)
     len = ntohl(len);
 
     read_data_ptr->payload = malloc_pt(host_node_ptr->msp,
-				       len + sizeof(int));
+                                       len + sizeof(int));
     if (read_data_ptr->payload == NULL) {
         logmsg(LOGMSG_ERROR, "%s:err can't allocate %d bytes for hostname\n",
                 __func__, len);
@@ -4431,7 +4460,8 @@ static void *reader_thread(void *arg)
             break;
 
         case WIRE_HEADER_ACK_PAYLOAD:
-            rc = process_payload_ack(netinfo_ptr, host_node_ptr);
+            rc = read_payload_ack_payload(read_data_ptr);
+            rc = process_payload_ack(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: payload ack error from host %s\n",
                         host_node_ptr->host);
