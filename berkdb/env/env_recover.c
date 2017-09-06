@@ -376,7 +376,7 @@ __db_find_recovery_start_int(dbenv, outlsn, max_lsn)
 	prev_lsn = lsn;
 	do {
 		if (ckp_args) {
-			free(ckp_args);
+			__os_free(dbenv, ckp_args);
 			ckp_args = NULL;
 		}
 		if ((ret = __log_c_get(logc, &lsn, &rec, DB_SET)) != 0 ||
@@ -401,7 +401,7 @@ __db_find_recovery_start_int(dbenv, outlsn, max_lsn)
 	ckp_lsn = ckp_args->ckp_lsn;
 	do {
 		if (ckp_args) {
-			free(ckp_args);
+			__os_free(dbenv, ckp_args);
 			ckp_args = NULL;
 		}
 		if ((ret = __log_c_get(logc, &lsn, &rec, DB_SET)) != 0 ||
@@ -1447,7 +1447,7 @@ __log_find_latest_checkpoint_before_lsn_try_harder(DB_ENV * dbenv,
 			if (type == DB___txn_ckp) {
 				if (log_compare(&lsn, max_lsn) < 0) {
 					*foundlsn = lsn;
-					free(data.data);
+					__os_free(dbenv, data.data);
 					return 0;
 				}
 			}
