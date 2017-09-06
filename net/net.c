@@ -1143,7 +1143,7 @@ static int write_message_int(netinfo_type *netinfo_ptr,
 
     wire_header = malloc_pt(host_node_ptr->msp, sizeof (*wire_header));
     new_iov = malloc_pt(host_node_ptr->msp,
-                        (iovcount + 3) * sizeof(struct iovec));
+                        (iovcount + 3) * sizeof(*new_iov));
 
     /*
      * Fill in the port details now
@@ -3321,6 +3321,7 @@ static int read_hello_payload(read_data *read_data_ptr)
         free(read_data_ptr->payload);
         return 1;
     }
+    return 0;
 }
 
 /*
@@ -4369,6 +4370,100 @@ static int verify_port(netinfo_type *netinfo_ptr, int alleged_port,
     }
 }
 
+static int process_read_data(read_data *read_data_ptr)
+{
+    host_node_type *host_node_ptr;
+    netinfo_type *netinfo_ptr;
+    wire_header_type *wire_header;
+    int rc;
+
+    host_node_ptr = read_data_ptr->host_node_ptr;
+    netinfo_ptr = host_node_ptr->netinfo_ptr;
+    wire_header = read_data_ptr->header;
+
+    switch (wire_header->type) {
+    case WIRE_HEADER_HEARTBEAT:
+        return 0;
+
+    case WIRE_HEADER_HELLO:
+        rc = process_hello(read_data_ptr);
+        if (rc != 0) {
+            logmsg(LOGMSG_ERROR,
+                   "%s: hello reply error from host %s\n",
+                   __func__,
+                   host_node_ptr->host);
+            goto done;
+        }
+
+        rc = write_hello_reply(netinfo_ptr, host_node_ptr);
+        if (rc != 0) {
+            logmsg(LOGMSG_ERROR,
+                   "%s: hello reply error from host %s\n",
+                   __func__,
+                   host_node_ptr->host);
+            goto done;
+        }
+        break;
+
+    case WIRE_HEADER_HELLO_REPLY:
+        rc = process_hello(read_data_ptr);
+        break;
+
+    case WIRE_HEADER_DECOM_NAME:
+        rc = process_decom_name(read_data_ptr);
+        if (rc != 0) {
+            logmsg(LOGMSG_ERROR,
+                   "%s: process decom error from host %s\n",
+                   __func__,
+                   host_node_ptr->host);
+            goto done;
+        }
+        break;
+
+    case WIRE_HEADER_USER_MSG:
+        if (netinfo_ptr->trace && debug_switch_net_verbose())
+            logmsg(LOGMSG_DEBUG, "Here %llu\n", gettmms());
+        rc = process_user_message(read_data_ptr);
+        if (rc != 0) {
+            logmsg(LOGMSG_ERROR,
+                   "%s: process_user_message error from host %s\n",
+                   __func__,
+                   host_node_ptr->host);
+            goto done;
+        }
+        break;
+
+    case WIRE_HEADER_ACK_PAYLOAD:
+        rc = read_payload_ack_payload(read_data_ptr);
+        rc = process_payload_ack(read_data_ptr);
+        if (rc != 0) {
+            logmsg(LOGMSG_ERROR,
+                   "%s: process payload ack error from host %s\n",
+                   __func__,
+                   host_node_ptr->host);
+            goto done;
+        }
+        break;
+
+    case WIRE_HEADER_ACK:
+        rc = process_ack(read_data_ptr);
+        if (rc != 0) {
+            logmsg(LOGMSG_ERROR,
+                   "%s: process ack error from host %s\n",
+                   __func__,
+                   host_node_ptr->host);
+            goto done;
+        }
+        break;
+    }
+
+    if (netinfo_ptr->trace && debug_switch_net_verbose())
+        logmsg(LOGMSG_USER, "RT: done processing %d %llu\n",
+               wire_header->type, gettmms());
+
+done:
+    return rc;
+}
 
 static void *reader_thread(void *arg)
 {
@@ -4443,9 +4538,8 @@ static void *reader_thread(void *arg)
             break;
 
         case WIRE_HEADER_HELLO:
+        case WIRE_HEADER_HELLO_REPLY:
             rc = read_hello_payload(read_data_ptr);
-            rc = process_hello(read_data_ptr);
-            rc = write_hello_reply(netinfo_ptr, host_node_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR,
                        "reader thread: hello error from host %s\n",
@@ -4454,14 +4548,8 @@ static void *reader_thread(void *arg)
             }
             break;
 
-        case WIRE_HEADER_HELLO_REPLY:
-            rc = read_hello_payload(read_data_ptr);
-            rc = process_hello(read_data_ptr);
-            break;
-
         case WIRE_HEADER_DECOM_NAME:
             rc = read_decom_name_payload(read_data_ptr);
-            rc = process_decom_name(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: decom error from host %s\n",
                         host_node_ptr->host);
@@ -4473,9 +4561,8 @@ static void *reader_thread(void *arg)
             if (netinfo_ptr->trace && debug_switch_net_verbose())
                 logmsg(LOGMSG_DEBUG, "Here %llu\n", gettmms());
             rc = read_user_payload(read_data_ptr);
-            rc = process_user_message(read_data_ptr);
             if (rc != 0) {
-                logmsg(LOGMSG_ERROR, 
+                logmsg(LOGMSG_ERROR,
                         "reader thread: process_user_message error from host %s\n",
                     host_node_ptr->host);
                 goto done;
@@ -4484,7 +4571,6 @@ static void *reader_thread(void *arg)
 
         case WIRE_HEADER_ACK_PAYLOAD:
             rc = read_payload_ack_payload(read_data_ptr);
-            rc = process_payload_ack(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: payload ack error from host %s\n",
                         host_node_ptr->host);
@@ -4494,7 +4580,6 @@ static void *reader_thread(void *arg)
 
         case WIRE_HEADER_ACK:
             rc = read_ack_payload(read_data_ptr);
-            rc = process_ack(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: ack error from host %s\n",
                         host_node_ptr->host);
@@ -4503,18 +4588,20 @@ static void *reader_thread(void *arg)
             break;
 
         default:
-            logmsg(LOGMSG_ERROR, 
+            logmsg(LOGMSG_ERROR,
                    "reader thread: unknown wire_header.type: %d from host %s\n",
                    wire_header->type, host_node_ptr->host);
             break;
         }
-        free(wire_header);
-
         if (netinfo_ptr->trace && debug_switch_net_verbose())
-           logmsg(LOGMSG_USER, "RT: done processing %d %llu\n", wire_header->type,
+           logmsg(LOGMSG_USER, "RT: done reading %d %llu\n", wire_header->type,
                    gettmms());
-    }
 
+        rc = process_read_data(read_data_ptr);
+        free(wire_header);
+        if (rc)
+            break;
+    }
 
 done:
 
@@ -4790,7 +4877,7 @@ static void *connect_thread(void *arg)
         rc = setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&flag,
                         sizeof(int));
         if (rc != 0) {
-            logmsg(LOGMSG_FATAL, 
+            logmsg(LOGMSG_FATAL,
                     "%s: couldnt turn on keep alive on new fd %d: %d %s\n",
                     __func__, fd, errno, strerror(errno));
             exit(1);
@@ -4919,7 +5006,7 @@ static void *connect_thread(void *arg)
         Pthread_mutex_unlock(&(host_node_ptr->write_lock));
 
         if (gbl_verbose_net)
-            host_node_printf(LOGMSG_USER, 
+            host_node_printf(LOGMSG_USER,
                     host_node_ptr, "%s: connection established\n",
                              __func__);
         host_node_ptr->timestamp = time(NULL);
