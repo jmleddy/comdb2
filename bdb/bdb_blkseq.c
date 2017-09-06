@@ -682,7 +682,7 @@ err:
     if (logc)
         logc->close(logc, 0);
     if (logdta.data)
-        free(logdta.data);
+        __os_free(bdb_state->dbenv, logdta.data);
     if (blkseq)
         free(blkseq);
     return rc;
