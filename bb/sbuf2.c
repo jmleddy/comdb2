@@ -632,6 +632,12 @@ static int sread(SBUF2 *sb, char *cc, int len)
     return rc;
 }
 
+/* Helper function so that we can bypass fread when poll() ourselves */
+int SBUF2_FUNC(sbuf2defaultread)(SBUF2 *sb, char *cc, int len)
+{
+  return sb->read(sb, cc, len);
+}
+
 int SBUF2_FUNC(sbuf2unbufferedread)(SBUF2 *sb, char *cc, int len)
 {
     int n, ioerr;

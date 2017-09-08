@@ -721,7 +721,7 @@ static int read_stream(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
     while (nread < maxbytes) {
         if (host_node_ptr) /* not set by all callers */
             host_node_ptr->timestamp = time(NULL);
-        int n = sbuf2unbufferedread(sb, ptr + nread, maxbytes - nread);
+        int n = sbuf2defaultread(sb, ptr + nread, maxbytes - nread);
         if (n > 0) {
             nread += n;
         } else if (n < 0) {
@@ -4965,15 +4965,17 @@ static void *connect_thread(void *arg)
 
         sbuf2setbufsize(host_node_ptr->sb, netinfo_ptr->bufsz);
 
+        /* We poll() on both read_message_header and read_stream */
+        sbuf2setr(host_node_ptr->sb, sbuf2unbufferedread);
+        /* Send messages immediately don't buffer */
+        sbuf2setw(host_node_ptr->sb, sbuf2unbufferedwrite);
+
         if (debug_switch_net_verbose()) {
             logmsg(LOGMSG_USER, "Setting wrapper\n");
             /* override sbuf2 defaults for testing */
             sbuf2setr(host_node_ptr->sb, sbuf2read_wrapper);
             sbuf2setw(host_node_ptr->sb, sbuf2write_wrapper);
         }
-
-        /* Send messages immediately don't buffer */
-        sbuf2setw(host_node_ptr->sb, sbuf2unbufferedwrite);
 
         /* doesn't matter - it's under lock ... */
         host_node_ptr->timestamp = time(NULL);
@@ -5608,14 +5610,16 @@ static void *accept_thread(void *arg)
             continue;
         }
 
+        /* We poll() on both read_message_header and read_stream */
+        sbuf2setr(sb, sbuf2unbufferedread);
+        /* Send messages immediately don't buffer */
+        sbuf2setw(sb, sbuf2unbufferedwrite);
+
         if (debug_switch_net_verbose()) {
             logmsg(LOGMSG_DEBUG, "Setting wrapper\n");
             sbuf2setr(sb, sbuf2read_wrapper);
             sbuf2setw(sb, sbuf2write_wrapper);
         }
-
-        /* Send messages immediately don't buffer */
-        sbuf2setw(sb, sbuf2unbufferedwrite);
 
         sbuf2setbufsize(sb, netinfo_ptr->bufsz);
 
