@@ -187,6 +187,8 @@ int SBUF2_FUNC(sbuf2eof)(SBUF2 *sb);
    SSL_SYS_CALL          -> ECONNRESET
    everything else       -> EIO
 */
+int SBUF2_FUNC(sbuf2defaultread)(SBUF2 *sb, char *cc, int len);
+#define sbuf2defaultread SBUF2_FUNC(sbuf2defaultread)
 int SBUF2_FUNC(sbuf2unbufferedread)(SBUF2 *sb, char *cc, int len);
 #define sbuf2unbufferedread SBUF2_FUNC(sbuf2unbufferedread)
 #ifndef WITH_SSL
