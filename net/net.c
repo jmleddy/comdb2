@@ -87,6 +87,7 @@
 
 #include <fsnapf.h>
 
+#include "thdpool.h"
 #include "rtcpu.h"
 
 #include "mem_net.h"
@@ -107,6 +108,7 @@ static int curr_udp_cnt = 0;
 extern int gbl_pmux_route_enabled;
 
 int gbl_verbose_net = 0;
+int gbl_net_proc_thread_max = 0;
 
 static unsigned long long gettmms(void)
 {
@@ -1274,10 +1276,11 @@ static int read_message_header(netinfo_type *netinfo_ptr,
     int timestamp;
     int node_timestamp;
 
-    timestamp = time(NULL);
+    node_timestamp = time(NULL);
     rc = sbuf2pollin(host_node_ptr->sb,
                      netinfo_ptr->heartbeat_check_time * 1000);
     if (rc == 0) {
+        timestamp = time(NULL);
         re_register_portmux(netinfo_ptr);
 
         if ((host_node_ptr->fd > 0) &&
@@ -4370,21 +4373,27 @@ static int verify_port(netinfo_type *netinfo_ptr, int alleged_port,
     }
 }
 
-static int process_read_data(read_data *read_data_ptr)
+/* Thread pool for processing data */
+static struct thdpool *net_proc_thdpool;
+
+static void process_read_data(struct thdpool *thdpool, void *work,
+                              void *thddata, int thd_op)
 {
+    read_data *read_data_ptr;
     host_node_type *host_node_ptr;
     netinfo_type *netinfo_ptr;
     wire_header_type *wire_header;
     int rc;
 
+    read_data_ptr = (read_data*)work;
     host_node_ptr = read_data_ptr->host_node_ptr;
     netinfo_ptr = host_node_ptr->netinfo_ptr;
     wire_header = read_data_ptr->header;
 
-    switch (wire_header->type) {
-    case WIRE_HEADER_HEARTBEAT:
-        return 0;
+    if (thd_op == THD_RUN && netinfo_ptr->start_thread_callback)
+        netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
 
+    switch (wire_header->type) {
     case WIRE_HEADER_HELLO:
         rc = process_hello(read_data_ptr);
         if (rc != 0) {
@@ -4392,7 +4401,6 @@ static int process_read_data(read_data *read_data_ptr)
                    "%s: hello reply error from host %s\n",
                    __func__,
                    host_node_ptr->host);
-            goto done;
         }
 
         rc = write_hello_reply(netinfo_ptr, host_node_ptr);
@@ -4401,7 +4409,6 @@ static int process_read_data(read_data *read_data_ptr)
                    "%s: hello reply error from host %s\n",
                    __func__,
                    host_node_ptr->host);
-            goto done;
         }
         break;
 
@@ -4416,7 +4423,6 @@ static int process_read_data(read_data *read_data_ptr)
                    "%s: process decom error from host %s\n",
                    __func__,
                    host_node_ptr->host);
-            goto done;
         }
         break;
 
@@ -4429,7 +4435,6 @@ static int process_read_data(read_data *read_data_ptr)
                    "%s: process_user_message error from host %s\n",
                    __func__,
                    host_node_ptr->host);
-            goto done;
         }
         break;
 
@@ -4441,7 +4446,6 @@ static int process_read_data(read_data *read_data_ptr)
                    "%s: process payload ack error from host %s\n",
                    __func__,
                    host_node_ptr->host);
-            goto done;
         }
         break;
 
@@ -4452,17 +4456,25 @@ static int process_read_data(read_data *read_data_ptr)
                    "%s: process ack error from host %s\n",
                    __func__,
                    host_node_ptr->host);
-            goto done;
         }
         break;
+
+    default:
+        logmsg(LOGMSG_ERROR,
+               "%s: unknown wire_header.type: %d from host %s\n",
+               __func__,
+               wire_header->type, host_node_ptr->host);
+        break;
     }
+
+    free(wire_header);
+
+    if (thd_op == THD_RUN && netinfo_ptr->stop_thread_callback)
+        netinfo_ptr->stop_thread_callback(netinfo_ptr->callback_data);
 
     if (netinfo_ptr->trace && debug_switch_net_verbose())
         logmsg(LOGMSG_USER, "RT: done processing %d %llu\n",
                wire_header->type, gettmms());
-
-done:
-    return rc;
 }
 
 static void *reader_thread(void *arg)
@@ -4535,7 +4547,9 @@ static void *reader_thread(void *arg)
         switch (wire_header->type) {
         case WIRE_HEADER_HEARTBEAT:
             /* No special processing for heartbeats */
-            break;
+            free(wire_header);
+            free(read_data_ptr);
+            continue;
 
         case WIRE_HEADER_HELLO:
         case WIRE_HEADER_HELLO_REPLY:
@@ -4597,8 +4611,14 @@ static void *reader_thread(void *arg)
            logmsg(LOGMSG_USER, "RT: done reading %d %llu\n", wire_header->type,
                    gettmms());
 
-        rc = process_read_data(read_data_ptr);
-        free(wire_header);
+        if (gbl_net_proc_thread_max) {
+            thdpool_enqueue(net_proc_thdpool, process_read_data,
+                            read_data_ptr, 0, NULL);
+        } else {
+            process_read_data(NULL, read_data_ptr, NULL, 0);
+        }
+
+
         if (rc)
             break;
     }
@@ -6087,6 +6107,16 @@ int connect_to_all(netinfo_type *netinfo_ptr)
     return 0;
 }
 
+static void init_net_proc_threads(netinfo_type *netinfo_ptr)
+{
+    net_proc_thdpool = thdpool_create("net_proc", 0);
+    thdpool_set_linger(net_proc_thdpool, netinfo_ptr->heartbeat_send_time);
+    thdpool_set_minthds(net_proc_thdpool, 0);
+    thdpool_set_maxthds(net_proc_thdpool, gbl_net_proc_thread_max);
+    thdpool_set_maxqueue(net_proc_thdpool, 8000);
+    thdpool_set_longwaitms(net_proc_thdpool, 30000);
+}
+
 /*
   1) set up a socket bound, and listening on our host/port
   2) create an accept_thread blocked on that socket
@@ -6151,6 +6181,9 @@ int net_init(netinfo_type *netinfo_ptr)
         logmsg(LOGMSG_FATAL, "init_network: connect_to_all failed - exiting\n");
         exit(1);
     }
+
+    /* create threadpool */
+    init_net_proc_threads(netinfo_ptr);
 
     /* XXX just give things a chance to settle down before we return */
     usleep(10000);

@@ -772,6 +772,7 @@ int gbl_fingerprint_queries = 1;
 char *gbl_dbdir = NULL;
 
 extern int gbl_verbose_net;
+extern int gbl_net_proc_thread_max;
 
 static void create_service_file(const char *lrlname);
 
@@ -4972,6 +4973,8 @@ static void register_all_int_switches()
                         &gbl_allow_parallel_rep_on_prefix);
     register_int_switch("verbose_net", "Net prints lots of messages",
                         &gbl_verbose_net);
+    register_int_switch("net_proc_thread_max", "Max number of processing "
+			"threads", &gbl_net_proc_thread_max);
     register_int_switch("only_match_on_commit",
                         "Only rep_verify_match on commit records",
                         &gbl_only_match_commit_records);

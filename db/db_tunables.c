@@ -86,6 +86,7 @@ extern int gbl_netbufsz_signal;
 extern int gbl_net_lmt_upd_incoherent_nodes;
 extern int gbl_net_max_mem;
 extern int gbl_net_max_queue_signal;
+extern int gbl_net_proc_thread_max;
 extern int gbl_net_throttle_percent;
 extern int gbl_nice;
 extern int gbl_notimeouts;

@@ -31,7 +31,7 @@ extern "C" {
 
 struct thdpool;
 
-enum thdpool_ioctl_op { THD_RUN, THD_FREE };
+enum thdpool_ioctl_op { THD_RUN = 1, THD_FREE = 2 };
 
 /* Set some sane defaults for stacksize */
 enum {
