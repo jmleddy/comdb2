@@ -5689,6 +5689,8 @@ static void *heartbeat_send_thread(void *arg)
 {
     host_node_type *ptr;
     netinfo_type *netinfo_ptr;
+    netinfo_type *netinfo_child;
+    int i;
 
     thread_started("net heartbeat send");
 
@@ -5716,7 +5718,31 @@ static void *heartbeat_send_thread(void *arg)
             }
         }
 
-        Pthread_rwlock_unlock(&(netinfo_ptr->lock));
+        /* if we have child nets hold on to the lock */
+        if (netinfo_ptr->num_child_nets) {
+            i = 1;
+            while (1) {
+                netinfo_child = netinfo_ptr->child_nets[i];
+                Pthread_rwlock_unlock(&(netinfo_ptr->lock));
+
+                /* Get child lock after releasing parent lock */
+                Pthread_rwlock_rdlock(&(netinfo_child->lock));
+                for (ptr = netinfo_child->head; ptr != NULL; ptr = ptr->next) {
+                    if (ptr->host != netinfo_child->myhostname) {
+                        write_heartbeat(netinfo_child, ptr);
+                    }
+                }
+                Pthread_rwlock_unlock(&(netinfo_child->lock));
+
+                i++;
+                if (i == netinfo_ptr->num_child_nets)
+                    break; /* Don't bother reacquiring netinfo_ptr lock */
+
+                Pthread_rwlock_rdlock(&(netinfo_ptr->lock));
+            }
+        } else {
+            Pthread_rwlock_unlock(&(netinfo_ptr->lock));
+        }
 
         if (netinfo_ptr->exiting)
             break;
@@ -6050,14 +6076,16 @@ int net_init(netinfo_type *netinfo_ptr)
     }
 
     /* create heartbeat writer thread */
-    rc = pthread_create(&(netinfo_ptr->heartbeat_send_thread_id),
-                        &(netinfo_ptr->pthread_attr_detach),
-                        heartbeat_send_thread, netinfo_ptr);
-    if (rc != 0) {
-        logmsg(LOGMSG_FATAL, "init_network:couldnt create heartbeat thread - "
-                        "rc=%d errno=%d %s exiting\n",
-                rc, errno, strerror(errno));
-        exit(1);
+    if (!netinfo_ptr->ischild) {
+        rc = pthread_create(&(netinfo_ptr->heartbeat_send_thread_id),
+                            &(netinfo_ptr->pthread_attr_detach),
+                            heartbeat_send_thread, netinfo_ptr);
+	if (rc != 0) {
+            logmsg(LOGMSG_FATAL, "init_network:couldnt create heartbeat "
+                   "thread rc=%d errno=%d %s exiting\n",
+		 rc, errno, strerror(errno));
+            exit(1);
+	}
     }
 
     if (netinfo_ptr->accept_on_child || !netinfo_ptr->ischild) {
