@@ -54,7 +54,8 @@ static void basic_node_data(struct host_node_tag *ptr, FILE *out)
 {
     struct timebuf t;
     char ip[16];
-    fprintf(out, "host %10s:%-5d fd %-3d", ptr->host, ptr->port, ptr->fd);
+    fprintf(out, "host %10s:%-5d fd %-3d", ptr->host, ptr->port,
+            sbuf2fileno(ptr->sb));
     if (ptr->have_connect_thread)
         fprintf(out, " cnt_thd");
     if (ptr->have_reader_thread)

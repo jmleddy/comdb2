@@ -148,7 +148,7 @@ static int connection_refresh(netinfo_type *netinfo_ptr,
     }
 
     /* no need to refresh if we're not connected */
-    if (-1 == host_node_ptr->fd) {
+    if (host_node_ptr->sb == NULL) {
         return 0;
     }
 
@@ -435,11 +435,12 @@ static void shutdown_hostnode_socket(host_node_type *host_node_ptr)
 {
     if (gbl_verbose_net)
         host_node_printf(LOGMSG_USER, host_node_ptr, "shutting down fd %d\n",
-                         host_node_ptr->fd);
+                         sbuf2fileno(host_node_ptr->sb));
 
-    if (shutdown(host_node_ptr->fd, 2) != 0) {
+    if (shutdown(sbuf2fileno(host_node_ptr->sb), 2) != 0) {
         host_node_errf(LOGMSG_ERROR, host_node_ptr, "%s: shutdown fd %d errno %d %s\n",
-                       __func__, host_node_ptr->fd, errno, strerror(errno));
+                       __func__, sbuf2fileno(host_node_ptr->sb), errno,
+                       strerror(errno));
     }
 }
 
@@ -486,18 +487,6 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
             host_node_ptr->sb = NULL;
             if (gbl_verbose_net)
                 host_node_printf(LOGMSG_DEBUG, host_node_ptr, "closing sbuf\n");
-        }
-
-        if (host_node_ptr->fd >= 0) {
-            if (gbl_verbose_net)
-                host_node_printf(LOGMSG_DEBUG, host_node_ptr, "close fd %d\n",
-                                 host_node_ptr->fd);
-            if (close(host_node_ptr->fd) != 0) {
-                host_node_errf(LOGMSG_ERROR, host_node_ptr, "close fd %d errno %d %s\n",
-                               __func__, host_node_ptr->fd, errno,
-                               strerror(errno));
-            }
-            host_node_ptr->fd = -1;
         }
 
         host_node_ptr->state_flags |= NET_STATE_REALLY_CLOSED;
@@ -1283,8 +1272,7 @@ static int read_message_header(netinfo_type *netinfo_ptr,
         timestamp = time(NULL);
         re_register_portmux(netinfo_ptr);
 
-        if ((host_node_ptr->fd > 0) &&
-            (host_node_ptr->running_user_func == 0)) {
+        if (host_node_ptr->sb && host_node_ptr->running_user_func == 0) {
                 host_node_printf(
                     LOGMSG_WARN,
                     host_node_ptr,
@@ -1763,8 +1751,8 @@ int net_send_message_payload_ack(netinfo_type *netinfo_ptr, const char *to_host,
         goto end;
     }
 
-    /* fail if we don't have a socket */
-    if (!host_node_ptr->fd) {
+    /* fail if we don't have a sbuf */
+    if (host_node_ptr->sb == NULL) {
         rc = NET_SEND_FAIL_NOSOCK;
         goto end;
     }
@@ -2043,8 +2031,8 @@ static int net_send_int(netinfo_type *netinfo_ptr, const char *host,
         goto end;
     }
 
-    /* fail if we don't have a socket */
-    if (!host_node_ptr->fd) {
+    /* fail if we don't have a sbuf */
+    if (host_node_ptr->sb == NULL) {
         rc = NET_SEND_FAIL_NOSOCK;
         goto end;
     }
@@ -2247,7 +2235,7 @@ int net_get_all_nodes_connected(netinfo_type *netinfo_ptr,
             continue;
 
         /* dont count disconected guys */
-        if (ptr->fd <= 0)
+        if (ptr->sb == NULL)
             continue;
 
         /* dont count guys that didnt hello us */
@@ -2507,7 +2495,6 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
 
     ptr->netinfo_ptr = netinfo_ptr;
     ptr->state_flags |= NET_STATE_CLOSED | NET_STATE_REALLY_CLOSED;
-    ptr->fd = -1;
 
     ptr->next = netinfo_ptr->head;
     ptr->host = intern(hostname);
@@ -2792,7 +2779,7 @@ int net_sanctioned_and_connected_nodes(netinfo_type *netinfo_ptr, int max_nodes,
             continue;
 
         /* dont count disconected guys */
-        if (ptr->fd <= 0)
+        if (ptr->sb == NULL)
             continue;
 
         /* dont count guys that didnt hello us */
@@ -4001,7 +3988,7 @@ int net_is_connected(netinfo_type *netinfo_ptr, const char *host)
     while (host_node_ptr != NULL && host_node_ptr->host != host)
         host_node_ptr = host_node_ptr->next;
 
-    if (host_node_ptr && (host_node_ptr->fd != -1))
+    if (host_node_ptr && (host_node_ptr->sb != NULL))
         rc = 1;
 
     Pthread_rwlock_unlock(&(netinfo_ptr->lock));
@@ -4129,7 +4116,7 @@ static int process_decom_name(read_data *read_data_ptr)
  * host_node_ptr->fd and host_node_ptr->sb should have been set up
  * to valid values before calling this.
  */
-static int create_reader_writer_threads(host_node_type *host_node_ptr,
+static int create_reader_threads(host_node_type *host_node_ptr,
                                         const char *funcname)
 {
     int rc;
@@ -4911,7 +4898,7 @@ static void *connect_thread(void *arg)
 
             /*fprintf(stderr, "sleeping for 100ms\n");*/
 
-            rc = poll(&pfd, 1, 100);
+            rc = poll(&pfd, 1, netinfo_ptr->heartbeat_check_time);
 
             if (rc == 0) {
                 /*timeout*/
@@ -5021,7 +5008,6 @@ static void *connect_thread(void *arg)
            this prevents a race where the heartbeat thread gets the
            heartbeat out before we get the connect message out
         */
-        host_node_ptr->fd = fd;
         host_node_ptr->state_flags &=
             ~NET_STATE_CLOSED & ~NET_STATE_REALLY_CLOSED;
 
@@ -5033,7 +5019,7 @@ static void *connect_thread(void *arg)
                              __func__);
         host_node_ptr->timestamp = time(NULL);
 
-        rc = create_reader_writer_threads(host_node_ptr, __func__);
+        rc = create_reader_threads(host_node_ptr, __func__);
         if (rc != 0) {
             close_hostnode_ll(host_node_ptr);
             goto again;
@@ -5240,22 +5226,22 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
          the heartbeat's demise, it could impact us here.  This logic can be
          disabled by turning on paulbit ( 143, 1 )
      */
-    if (host_node_ptr->fd != -1 &&
+    if ((host_node_ptr->sb != NULL) &&
         connection_refresh(netinfo_ptr, host_node_ptr)) {
         host_node_errf(
             LOGMSG_INFO,
             host_node_ptr,
             "%s: refresh existing connection- close current hostnode fd %d\n",
-            __func__, host_node_ptr->fd);
+            __func__, sbuf2fileno(host_node_ptr->sb));
 
         /*   will fd to -1 if the reader & writer have exited */
         close_hostnode_ll(host_node_ptr);
     }
 
-    if (host_node_ptr->fd != -1) {
+    if (host_node_ptr->sb != NULL) {
         host_node_errf(LOGMSG_WARN, host_node_ptr, "%s: already have connection - my "
                                       "current fd is %d, closing fd %d\n",
-                       __func__, host_node_ptr->fd, new_fd);
+                       __func__, sbuf2fileno(host_node_ptr->sb), new_fd);
         sbuf2close(sb);
         close(new_fd);
         Pthread_mutex_unlock(&(host_node_ptr->lock));
@@ -5282,7 +5268,6 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     host_node_ptr->timestamp = time(NULL);
     Pthread_mutex_lock(&(host_node_ptr->write_lock));
     empty_write_list(host_node_ptr);
-    host_node_ptr->fd = new_fd;
     host_node_ptr->sb = sb;
     Pthread_mutex_unlock(&(host_node_ptr->write_lock));
 
@@ -5294,7 +5279,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     host_node_ptr->rej_up_cnt = 0;
 
     /* create reader & writer threads */
-    int rc = create_reader_writer_threads(host_node_ptr, __func__);
+    int rc = create_reader_threads(host_node_ptr, __func__);
     if (rc != 0) {
         close_hostnode_ll(host_node_ptr);
         Pthread_mutex_unlock(&(host_node_ptr->lock));
@@ -6042,7 +6027,7 @@ static int is_ok(netinfo_type *netinfo_ptr, const char *host)
              * stuff under lock. */
             int ok = 0;
             Pthread_mutex_lock(&(host_node_ptr->lock));
-            if (host_node_ptr->fd > 0 && !host_node_ptr->state_flags) {
+            if (host_node_ptr->sb && !host_node_ptr->state_flags) {
                 ok = 1;
             }
             Pthread_mutex_unlock(&(host_node_ptr->lock));
@@ -6175,12 +6160,12 @@ int net_init(netinfo_type *netinfo_ptr)
         rc = pthread_create(&(netinfo_ptr->heartbeat_send_thread_id),
                             &(netinfo_ptr->pthread_attr_detach),
                             heartbeat_send_thread, netinfo_ptr);
-	if (rc != 0) {
+        if (rc != 0) {
             logmsg(LOGMSG_FATAL, "init_network:couldnt create heartbeat "
                    "thread rc=%d errno=%d %s exiting\n",
-		 rc, errno, strerror(errno));
+                   rc, errno, strerror(errno));
             exit(1);
-	}
+        }
     }
 
     if (netinfo_ptr->accept_on_child || !netinfo_ptr->ischild) {
@@ -6352,7 +6337,7 @@ static char *net_get_osql_node_ll(netinfo_type *netinfo_ptr,
             continue;
 
         /* disconnected already ?*/
-        if (ptr->fd <= 0 || !ptr->got_hello)
+        if (ptr->sb == NULL || !ptr->got_hello)
             continue;
 
         /* is rtcpu-ed? */
@@ -6441,7 +6426,6 @@ int net_get_nodes_info(netinfo_type *netinfo_ptr, int max_nodes,
 
     for (ptr = netinfo_ptr->head; ptr != NULL; ptr = ptr->next) {
         if (max_nodes > 0) {
-            out_nodes->fd = ptr->fd;
             out_nodes->host = ptr->host;
             out_nodes->port = ptr->port;
 

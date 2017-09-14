@@ -136,7 +136,6 @@ enum {
 };
 
 struct host_node_tag {
-    int fd;
     SBUF2 *sb;
     char *host;
     int hostname_len;
