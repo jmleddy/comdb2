@@ -47,14 +47,14 @@ static void host_node_vprintf(loglvl lvl, host_node_type *host_node_ptr,
        return;
     */
 
+
     Pthread_mutex_lock(&trace_lock);
     logmsg(lvl, "0x%x [%s %s%s fd %d] ", pthread_self(),
-            netinfo_ptr->service, host_node_ptr->host, host_node_ptr->subnet,
-            host_node_ptr->fd);
+           netinfo_ptr->service, host_node_ptr->host, host_node_ptr->subnet,
+           sbuf2fileno(host_node_ptr->sb));
     logmsgv(lvl, fmt, ap);
     Pthread_mutex_unlock(&trace_lock);
 }
-
 void host_node_printf(loglvl lvl, host_node_type *host_node_ptr, const char *fmt, ...)
 {
     va_list ap;
