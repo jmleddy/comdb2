@@ -69,7 +69,6 @@ typedef struct write_node_data {
     int enque_time;
     int pooled;
     struct write_node_data *next;
-    struct write_node_data *prev;
     size_t len;
     /* Must be last thing in struct; payload immediately follows header */
     union {
@@ -158,7 +157,6 @@ struct host_node_tag {
     pthread_cond_t ack_wakeup;
     pthread_mutex_t wait_mutex;
     int timestamp;
-    pthread_mutex_t write_lock;
     int got_hello;
     int running_user_func; /* This is a count of how many are running */
 
@@ -204,7 +202,6 @@ struct host_node_tag {
     pthread_mutex_t timestamp_lock; /* no more premature session killing */
 
     int throttle_waiters;
-    pthread_mutex_t throttle_lock;
     pthread_cond_t throttle_wakeup;
 };
 

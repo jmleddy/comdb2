@@ -613,7 +613,6 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
     insert->flags = flags;
     insert->enque_time = time_epoch();
     insert->next = NULL;
-    insert->prev = NULL;
     insert->len = datasz;
 
     ptr = insert->payload.raw;
@@ -629,12 +628,9 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
 
     if (host_node_ptr->write_head == NULL) {
         host_node_ptr->write_head = host_node_ptr->write_tail = insert;
-        insert->next = insert->prev = NULL;
     } else if (flags & WRITE_MSG_HEAD) {
         /* Insert at head of list */
         insert->next = host_node_ptr->write_head;
-        insert->prev = NULL;
-        host_node_ptr->write_head->prev = insert;
         host_node_ptr->write_head = insert;
     } else if (flags & WRITE_MSG_INORDER && netinfo_ptr->netcmp_rtn != NULL) {
         int cnt = 0, cmp, reordered = 0;
@@ -646,7 +642,6 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
                     ptr->payload.raw, ptr->len)) < 0 &&
                cnt++ < netinfo_ptr->enque_reorder_lookahead) {
             reordered = 1;
-            ptr = ptr->prev;
         }
 
         /* Update some stats */
@@ -658,18 +653,13 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
         /* Insert at head */
         if (ptr == NULL) {
             insert->next = host_node_ptr->write_head;
-            insert->prev = NULL;
-            host_node_ptr->write_head->prev = insert;
             host_node_ptr->write_head = insert;
         } else {
-            insert->prev = ptr;
             insert->next = ptr->next;
 
             /* Normal case: will be at the tail */
             if (ptr == host_node_ptr->write_tail) {
                 host_node_ptr->write_tail = insert;
-            } else {
-                ptr->next->prev = insert;
             }
             ptr->next = insert;
         }
@@ -678,7 +668,6 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
     {
         /* Insert at tail of list */
         host_node_ptr->write_tail->next = insert;
-        insert->prev = host_node_ptr->write_tail;
         insert->next = NULL;
         host_node_ptr->write_tail = insert;
     }
@@ -1611,7 +1600,7 @@ static void net_throttle_wait_loop(netinfo_type *netinfo_ptr,
                                    uint64_t byte_threshold)
 {
     int loops = 0;
-    Pthread_mutex_lock(&(host_ptr->throttle_lock));
+    Pthread_mutex_lock(&(host_ptr->enquelk));
     host_ptr->throttle_waiters++;
 
     while (!(host_ptr->state_flags & NET_STATE_CLOSED) &&
@@ -1642,13 +1631,13 @@ static void net_throttle_wait_loop(netinfo_type *netinfo_ptr,
         netinfo_ptr->stats.throttle_waits++;
 
         pthread_cond_timedwait(&(host_ptr->throttle_wakeup),
-                               &(host_ptr->throttle_lock), &waittime);
+                               &(host_ptr->enquelk), &waittime);
 
         loops++;
     }
 
     host_ptr->throttle_waiters--;
-    Pthread_mutex_unlock(&(host_ptr->throttle_lock));
+    Pthread_mutex_unlock(&(host_ptr->enquelk));
 }
 
 
@@ -2536,8 +2525,9 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
         netinfo_ptr->pool_size, netinfo_ptr->pool_extend, malloc, free);
 
     if (ptr->write_pool == NULL) {
-        logmsg(LOGMSG_ERROR, "%s: couldn't init write_lock for node %s\n", __func__,
-                ptr->host);
+        logmsg(LOGMSG_ERROR, "%s: couldn't init write_pool for node %s\n",
+               __func__,
+               ptr->host);
         goto err;
     }
 
@@ -2549,12 +2539,6 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
     }
 #endif /* !PER_THREAD_MALLOC */
 
-    rc = pthread_mutex_init(&(ptr->write_lock), NULL);
-    if (rc != 0) {
-        logmsg(LOGMSG_ERROR, "%s: couldn't init write_lock for node %s\n", __func__,
-                ptr->host);
-        goto err;
-    }
     rc = pthread_mutex_init(&(ptr->enquelk), NULL);
     if (rc != 0) {
         logmsg(LOGMSG_ERROR, "%s: couldn't init enquelk for node %s\n", __func__,
@@ -2569,13 +2553,6 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
     if (rc != 0) {
         logmsg(LOGMSG_ERROR, "%s: couldn't init wait_mutex for node %s\n", __func__,
                 ptr->host);
-        goto err;
-    }
-
-    rc = pthread_mutex_init(&(ptr->throttle_lock), NULL);
-    if (rc != 0) {
-        logmsg(LOGMSG_ERROR, "%s: couldn't init throttle_lock for node %s\n",
-                __func__, ptr->host);
         goto err;
     }
 
@@ -2658,9 +2635,7 @@ static void rem_from_netinfo(netinfo_type *netinfo_ptr,
 
         if (host_node_ptr->write_head != NULL) {
             /* purge anything pending to be sent */
-            Pthread_mutex_lock(&(host_node_ptr->write_lock));
             empty_write_list(host_node_ptr);
-            Pthread_mutex_unlock(&(host_node_ptr->write_lock));
         }
 
         /* This routine (& 'free') is only called when the connect-thread exits
@@ -2668,11 +2643,8 @@ static void rem_from_netinfo(netinfo_type *netinfo_ptr,
         pthread_mutex_destroy(&(host_node_ptr->lock));
         pthread_mutex_destroy(&(host_node_ptr->timestamp_lock));
         pthread_mutex_destroy(&(host_node_ptr->pool_lock));
-        pthread_mutex_destroy(&(host_node_ptr->write_lock));
         pthread_mutex_destroy(&(host_node_ptr->enquelk));
         pthread_mutex_destroy(&(host_node_ptr->wait_mutex));
-        pthread_mutex_destroy(&(host_node_ptr->throttle_lock));
-
         pthread_cond_destroy(&(host_node_ptr->ack_wakeup));
         pthread_cond_destroy(&(host_node_ptr->throttle_wakeup));
 
@@ -4162,109 +4134,102 @@ static void shutdown_other_hostnodes(host_node_type *host_node_ptr)
 static void flush_writer_queue(host_node_type *host_node_ptr)
 {
     netinfo_type *netinfo_ptr;
-    write_data *write_list_ptr, *write_list_back;
-    int rc, maxage;
+    write_data *write_list_ptr;
     struct timespec waittime;
 #ifndef HAS_CLOCK_GETTIME
     struct timeval tv;
 #endif
+    int start_time, end_time, diff_time, maxage;
+    unsigned count, bytes;
+    int rc;
+
+    maxage = 0;
+    count = 0;
+    bytes = 0;
+    start_time = time_epoch();
     netinfo_ptr = host_node_ptr->netinfo_ptr;
 
+    Pthread_mutex_lock(&(host_node_ptr->enquelk));
+    write_list_ptr = host_node_ptr->write_head;
+    while (write_list_ptr &&
+           !netinfo_ptr->exiting &&
+           (!(host_node_ptr->state_flags &
+              (NET_STATE_DECOM | NET_STATE_CLOSED)))) {
+        int age;
 
-    if (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
-                                   (NET_STATE_DECOM | NET_STATE_CLOSED))) {
-        if (host_node_ptr->write_head != NULL) {
-            unsigned count, bytes;
-            int start_time, end_time, diff_time;
+        age = time_epoch() - write_list_ptr->enque_time;
+        if (age > maxage)
+            maxage = age;
 
-            Pthread_mutex_lock(&(host_node_ptr->enquelk));
-            /* grab the entire list and reset enqueue counters */
-            write_list_back = write_list_ptr = host_node_ptr->write_head;
-            host_node_ptr->write_head = host_node_ptr->write_tail = NULL;
-            count = host_node_ptr->enque_count;
-            bytes = host_node_ptr->enque_bytes;
-            host_node_ptr->enque_count = 0;
-            host_node_ptr->enque_bytes = 0;
+        /* write out packet */
+        rc = write_stream(
+            netinfo_ptr, host_node_ptr, host_node_ptr->sb,
+            write_list_ptr->payload.raw, write_list_ptr->len);
 
-            /* release this before writing to sock*/
+        /* update common stats*/
+        host_node_ptr->enque_bytes -= rc;
+        bytes += rc;
+        if (rc == write_list_ptr->len) {
+            host_node_ptr->enque_count--;
+            count++;
+
+            /* pull node off list */
+            host_node_ptr->write_head = write_list_ptr->next;
+            if (write_list_ptr->pooled) {
+                Pthread_mutex_lock(&(host_node_ptr->pool_lock));
+                pool_relablk(host_node_ptr->write_pool,
+                             write_list_ptr);
+                Pthread_mutex_unlock(&(host_node_ptr->pool_lock));
+            } else {
+                free(write_list_ptr);
+            }
+            write_list_ptr = host_node_ptr->write_head;
+        } else {
+            /* partial write */
+            write_list_ptr->len -= rc;
+            memmove(write_list_ptr->payload.raw,
+                    write_list_ptr->payload.raw + rc,
+                    write_list_ptr->len);
             Pthread_mutex_unlock(&(host_node_ptr->enquelk));
-
-            pthread_cond_broadcast(&(host_node_ptr->throttle_wakeup));
-
-            maxage = 0;
-
-            Pthread_mutex_lock(&(host_node_ptr->write_lock));
-            start_time = time_epoch();
-            while (write_list_ptr != NULL) {
-                /* stop writing if we've hit an error or if we've disconnected
-                 */
-                if (!(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
-                    int age;
-                    wire_header_type *wire_header, tmp_wire_hdr;
-                    uint8_t *p_buf, *p_buf_end;
-
-                    age = time_epoch() - write_list_ptr->enque_time;
-                    if (age > maxage)
-                        maxage = age;
-
-                    rc = write_stream(
-                        netinfo_ptr, host_node_ptr, host_node_ptr->sb,
-                        write_list_ptr->payload.raw, write_list_ptr->len);
-                    if (rc != write_list_ptr->len) {
-                        write_list_ptr->len -= rc;
-                        memmove(write_list_ptr->payload.raw,
-                                write_list_ptr->payload.raw + rc,
-                                write_list_ptr->len);
-                        break;
-                    }
-                } else {
-                    rc = -1;
-                    break;
-                }
-
-                write_list_back = write_list_ptr;
-                write_list_ptr = write_list_ptr->next;
-
-                if (write_list_back->pooled) {
-                    Pthread_mutex_lock(&(host_node_ptr->pool_lock));
-                    pool_relablk(host_node_ptr->write_pool, write_list_back);
-                    Pthread_mutex_unlock(&(host_node_ptr->pool_lock));
-                } else {
-                    free(write_list_back);
-                }
-            }
-            /* we seem to set nodelay on virtually every message.  try to get
-             * slightly better streaming performance by moving the flush out of
-             * the main loop. */
-            net_delay(host_node_ptr->host);
-            if (netinfo_ptr->trace && debug_switch_net_verbose())
-                logmsg(LOGMSG_USER, "Flushing %llu\n", gettmms());
-            sbuf2flush(host_node_ptr->sb);
-            end_time = time_epoch();
-            Pthread_mutex_unlock(&(host_node_ptr->write_lock));
-
-            diff_time = end_time - start_time;
-            if (diff_time >= 2) {
-                /* this is really informational now so I won't use
-                 * capitals.  this trace dosn't necessarily mean that the
-                 * network
-                 * is being unreasonable. */
-                host_node_errf(LOGMSG_WARN, host_node_ptr,
-                               "%s: long write %d secs %u items %u bytes\n",
-                               __func__, diff_time, count, bytes);
-            }
-
-            if (rc < 0) {
-                Pthread_mutex_lock(&(host_node_ptr->lock));
-                if (gbl_verbose_net)
-                    host_node_printf(LOGMSG_DEBUG, host_node_ptr,
-                                     "%s bad send\n", __func__);
-                shutdown_other_hostnodes(host_node_ptr);
-                close_hostnode_ll(host_node_ptr);
-                Pthread_mutex_unlock(&(host_node_ptr->lock));
-
-            }
+            break;
         }
+        pthread_cond_broadcast(&(host_node_ptr->throttle_wakeup));
+        /* release this to allow throttle */
+        Pthread_mutex_unlock(&(host_node_ptr->enquelk));
+
+        /* acquire lock for write */
+        Pthread_mutex_lock(&(host_node_ptr->enquelk));
+    }
+    /* we seem to set nodelay on virtually every message.  try to get
+     * slightly better streaming performance by moving the flush out of
+     * the main loop. */
+    net_delay(host_node_ptr->host);
+    if (netinfo_ptr->trace && debug_switch_net_verbose())
+        logmsg(LOGMSG_USER, "Flushing %llu\n", gettmms());
+    sbuf2flush(host_node_ptr->sb);
+    end_time = time_epoch();
+    Pthread_mutex_unlock(&(host_node_ptr->enquelk));
+
+    diff_time = end_time - start_time;
+    if (diff_time >= 2) {
+        /* this is really informational now so I won't use
+         * capitals.  this trace dosn't necessarily mean that the
+         * network
+         * is being unreasonable. */
+        host_node_errf(LOGMSG_WARN, host_node_ptr,
+                       "%s: long write %d secs %u items %u bytes\n",
+                       __func__, diff_time, count, bytes);
+    }
+
+    if (rc < 0) {
+        Pthread_mutex_lock(&(host_node_ptr->lock));
+        if (gbl_verbose_net)
+            host_node_printf(LOGMSG_DEBUG, host_node_ptr,
+                             "%s bad send\n", __func__);
+        shutdown_other_hostnodes(host_node_ptr);
+        close_hostnode_ll(host_node_ptr);
+        Pthread_mutex_unlock(&(host_node_ptr->lock));
+
     }
 }
 
@@ -4987,7 +4952,7 @@ static void *connect_thread(void *arg)
         /* doesn't matter - it's under lock ... */
         host_node_ptr->timestamp = time(NULL);
 
-        Pthread_mutex_lock(&(host_node_ptr->write_lock));
+        Pthread_mutex_lock(&(host_node_ptr->enquelk));
 
         if (gbl_verbose_net)
             host_node_printf(LOGMSG_USER, host_node_ptr, "%s: write connect message\n",
@@ -4998,7 +4963,7 @@ static void *connect_thread(void *arg)
             host_node_printf(LOGMSG_ERROR, host_node_ptr,
                              "%s: couldnt send connect message\n", __func__);
             close_hostnode_ll(host_node_ptr);
-            Pthread_mutex_unlock(&(host_node_ptr->write_lock));
+            Pthread_mutex_unlock(&(host_node_ptr->enquelk));
             goto again;
         }
         sbuf2flush(host_node_ptr->sb);
@@ -5011,7 +4976,7 @@ static void *connect_thread(void *arg)
         host_node_ptr->state_flags &=
             ~NET_STATE_CLOSED & ~NET_STATE_REALLY_CLOSED;
 
-        Pthread_mutex_unlock(&(host_node_ptr->write_lock));
+        Pthread_mutex_unlock(&(host_node_ptr->enquelk));
 
         if (gbl_verbose_net)
             host_node_printf(LOGMSG_USER,
@@ -5025,7 +4990,7 @@ static void *connect_thread(void *arg)
             goto again;
         }
 
-    again:
+again:
         Pthread_mutex_unlock(&(host_node_ptr->lock));
         if (netinfo_ptr->exiting) {
             break;
@@ -5052,11 +5017,11 @@ static void *connect_thread(void *arg)
         ref = host_node_ptr->have_reader_thread;
         Pthread_mutex_unlock(&(host_node_ptr->lock));
 
-        Pthread_mutex_lock(&(host_node_ptr->throttle_lock));
+        Pthread_mutex_lock(&(host_node_ptr->enquelk));
         ref += host_node_ptr->throttle_waiters;
         if (host_node_ptr->throttle_waiters > 0)
             pthread_cond_broadcast(&(host_node_ptr->throttle_wakeup));
-        Pthread_mutex_unlock(&(host_node_ptr->throttle_lock));
+        Pthread_mutex_unlock(&(host_node_ptr->enquelk));
 
         if (ref == 0)
             break;
@@ -5266,10 +5231,8 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     memset(host_node_ptr->subnet, 0, HOSTNAME_LEN);
 
     host_node_ptr->timestamp = time(NULL);
-    Pthread_mutex_lock(&(host_node_ptr->write_lock));
     empty_write_list(host_node_ptr);
     host_node_ptr->sb = sb;
-    Pthread_mutex_unlock(&(host_node_ptr->write_lock));
 
     if (gbl_verbose_net)
         host_node_errf(LOGMSG_USER, host_node_ptr, "%s: accepting connection on new_fd %d\n",
