@@ -75,11 +75,12 @@ static void basic_node_data(struct host_node_tag *ptr, FILE *out)
     fprintf(out, "\n");
 
     fprintf(out, "  enque count %-5u peak %-5u at %s (hit max %u times)\n",
-            ptr->enque_count, ptr->peak_enque_count,
-            fmt_time(&t, ptr->peak_enque_count_time), ptr->num_queue_full);
+            ptr->enqueue_count, ptr->peak_enqueue_count,
+            fmt_time(&t, ptr->peak_enqueue_count_time), ptr->num_queue_full);
 
-    fprintf(out, "  enque bytes %-5u peak %-5u at %s\n", ptr->enque_bytes,
-            ptr->peak_enque_bytes, fmt_time(&t, ptr->peak_enque_bytes_time));
+    fprintf(out, "  enque bytes %-5u peak %-5u at %s\n", ptr->enqueue_bytes,
+            ptr->peak_enqueue_bytes,
+	    fmt_time(&t, ptr->peak_enqueue_bytes_time));
 }
 
 static void basic_stat(netinfo_type *netinfo_ptr, FILE *out)
@@ -107,13 +108,13 @@ static void dump_node(netinfo_type *netinfo_ptr, FILE *out, char *host)
             fprintf(out, "== NODE DUMP FOR %s ==\n", ptr->host);
             basic_node_data(ptr, out);
             Pthread_mutex_lock(&(ptr->enquelk));
-            fprintf(out, "write list %u items %u bytes:\n", ptr->enque_count,
-                    ptr->enque_bytes);
+            fprintf(out, "write list %u items %u bytes:\n", ptr->enqueue_count,
+                    ptr->enqueue_bytes);
             for (write_list_ptr = ptr->write_head; write_list_ptr != NULL;
                  write_list_ptr = write_list_ptr->next) {
                 fprintf(out, "  typ %d age %2d flg %2x len %4u\n",
                         write_list_ptr->payload.header.type,
-                        time_epoch() - write_list_ptr->enque_time,
+                        time_epoch() - write_list_ptr->enqueue_time,
                         write_list_ptr->flags, (unsigned)write_list_ptr->len);
             }
             Pthread_mutex_unlock(&(ptr->enquelk));

@@ -66,7 +66,7 @@ typedef struct read_node_data {
 
 typedef struct write_node_data {
     int flags;
-    int enque_time;
+    int enqueue_time;
     int pooled;
     struct write_node_data *next;
     size_t len;
@@ -160,17 +160,17 @@ struct host_node_tag {
     int got_hello;
     int running_user_func; /* This is a count of how many are running */
 
-    unsigned enque_count; /* number of items currently
+    unsigned enqueue_count; /* number of items currently
                              enqueued for writing */
-    unsigned peak_enque_count;
-    unsigned peak_enque_count_time;
+    unsigned peak_enqueue_count;
+    unsigned peak_enqueue_count_time;
 
     unsigned num_queue_full; /* how often we hit queue full issue */
     unsigned last_queue_full_time;
 
-    unsigned enque_bytes;
-    unsigned peak_enque_bytes;
-    unsigned peak_enque_bytes_time;
+    unsigned enqueue_bytes;
+    unsigned peak_enqueue_bytes;
+    unsigned peak_enqueue_bytes_time;
 
     struct in_addr addr;
     int addr_len;

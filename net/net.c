@@ -536,10 +536,10 @@ static int write_list(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
     Pthread_mutex_lock(&(host_node_ptr->enquelk));
 
     /* let 1 message always slip in */
-    if (host_node_ptr->enque_count) {
+    if (host_node_ptr->enqueue_count) {
         if ((flags & WRITE_MSG_NOLIMIT) == 0 &&
-            ((host_node_ptr->enque_count > netinfo_ptr->max_queue) ||
-             (host_node_ptr->enque_bytes > netinfo_ptr->max_bytes))) {
+            ((host_node_ptr->enqueue_count > netinfo_ptr->max_queue) ||
+             (host_node_ptr->enqueue_bytes > netinfo_ptr->max_bytes))) {
             host_node_ptr->num_queue_full++;
 
             rc = -2;
@@ -611,7 +611,7 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
     }
 
     insert->flags = flags;
-    insert->enque_time = time_epoch();
+    insert->enqueue_time = time_epoch();
     insert->next = NULL;
     insert->len = datasz;
 
@@ -674,15 +674,15 @@ fprintf(stderr, "[%s] using malloc for %d bytes\n",
 
     if (host_node_ptr->netinfo_ptr->trace && debug_switch_net_verbose())
         logmsg(LOGMSG_USER, "Queing %d bytes %llu\n", insert->len, gettmms());
-    host_node_ptr->enque_count++;
-    if (host_node_ptr->enque_count > host_node_ptr->peak_enque_count) {
-        host_node_ptr->peak_enque_count = host_node_ptr->enque_count;
-        host_node_ptr->peak_enque_count_time = time_epoch();
+    host_node_ptr->enqueue_count++;
+    if (host_node_ptr->enqueue_count > host_node_ptr->peak_enqueue_count) {
+        host_node_ptr->peak_enqueue_count = host_node_ptr->enqueue_count;
+        host_node_ptr->peak_enqueue_count_time = time_epoch();
     }
-    host_node_ptr->enque_bytes += insert->len;
-    if (host_node_ptr->enque_bytes > host_node_ptr->peak_enque_bytes) {
-        host_node_ptr->peak_enque_bytes = host_node_ptr->enque_bytes;
-        host_node_ptr->peak_enque_bytes_time = time_epoch();
+    host_node_ptr->enqueue_bytes += insert->len;
+    if (host_node_ptr->enqueue_bytes > host_node_ptr->peak_enqueue_bytes) {
+        host_node_ptr->peak_enqueue_bytes = host_node_ptr->enqueue_bytes;
+        host_node_ptr->peak_enqueue_bytes_time = time_epoch();
     }
 
     rc = 0;
@@ -1000,8 +1000,8 @@ static int empty_write_list(host_node_type *host_node_ptr)
     }
     host_node_ptr->write_head = host_node_ptr->write_tail = NULL;
 
-    host_node_ptr->enque_count = 0;
-    host_node_ptr->enque_bytes = 0;
+    host_node_ptr->enqueue_count = 0;
+    host_node_ptr->enqueue_bytes = 0;
 
     Pthread_mutex_unlock(&(host_node_ptr->enquelk));
 
@@ -1604,8 +1604,8 @@ static void net_throttle_wait_loop(netinfo_type *netinfo_ptr,
     host_ptr->throttle_waiters++;
 
     while (!(host_ptr->state_flags & NET_STATE_CLOSED) &&
-           ((host_ptr->enque_count > queue_threshold) ||
-            (host_ptr->enque_bytes > byte_threshold)))
+           ((host_ptr->enqueue_count > queue_threshold) ||
+            (host_ptr->enqueue_bytes > byte_threshold)))
 
     {
         struct timespec waittime;
@@ -1664,11 +1664,11 @@ int net_throttle_wait(netinfo_type *netinfo_ptr)
 
     host_node_type *ptr = netinfo_ptr->head;
     /* let 1 message always slip in */
-    if (ptr && ptr->enque_count) {
+    if (ptr && ptr->enqueue_count) {
         while (ptr) {
             if (!(ptr->state_flags & NET_STATE_CLOSED) &&
-                ((ptr->enque_count > queue_threshold) ||
-                 (ptr->enque_bytes > byte_threshold))) {
+                ((ptr->enqueue_count > queue_threshold) ||
+                 (ptr->enqueue_bytes > byte_threshold))) {
                 cnt++;
                 net_throttle_wait_loop(netinfo_ptr, ptr, queue_threshold,
                                        byte_threshold);
@@ -1695,7 +1695,7 @@ int net_get_queue_size(netinfo_type *netinfo_ptr, const char *hostname,
     }
 
     Pthread_mutex_lock(&(host_node_ptr->enquelk));
-    *usage = host_node_ptr->enque_count;
+    *usage = host_node_ptr->enqueue_count;
     *limit = netinfo_ptr->max_queue;
     Pthread_mutex_unlock(&(host_node_ptr->enquelk));
 
@@ -2546,8 +2546,8 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
         goto err;
     }
 
-    ptr->enque_count = 0;
-    ptr->enque_bytes = 0;
+    ptr->enqueue_count = 0;
+    ptr->enqueue_bytes = 0;
 
     rc = pthread_mutex_init(&(ptr->wait_mutex), NULL);
     if (rc != 0) {
@@ -4157,7 +4157,7 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
               (NET_STATE_DECOM | NET_STATE_CLOSED)))) {
         int age;
 
-        age = time_epoch() - write_list_ptr->enque_time;
+        age = time_epoch() - write_list_ptr->enqueue_time;
         if (age > maxage)
             maxage = age;
 
@@ -4167,10 +4167,10 @@ static void flush_writer_queue(host_node_type *host_node_ptr)
             write_list_ptr->payload.raw, write_list_ptr->len);
 
         /* update common stats*/
-        host_node_ptr->enque_bytes -= rc;
+        host_node_ptr->enqueue_bytes -= rc;
         bytes += rc;
         if (rc == write_list_ptr->len) {
-            host_node_ptr->enque_count--;
+            host_node_ptr->enqueue_count--;
             count++;
 
             /* pull node off list */
