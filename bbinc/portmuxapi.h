@@ -262,6 +262,17 @@ const char *portmux_fds_get_app(portmux_fd_t *fds);
 const char *portmux_fds_get_service(portmux_fd_t *fds);
 const char *portmux_fds_get_instance(portmux_fd_t *fds);
 
+/**
+ * @brief  Using portmux_fds to get the fds that we listen to.
+ *
+ * @param[in/out] fds           Portmux_fd to query.
+ *
+ * @return Listening fd.
+ */
+int portmux_fds_get_fd(portmux_fd_t *fds);
+int portmux_fds_get_tcpfd(portmux_fd_t *fds);
+
+
 void set_portmux_port(int port);
 int set_portmux_bind_path(const char *path);
 

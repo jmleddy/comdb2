@@ -33,6 +33,7 @@
 #include "net_types.h"
 #include "cdb2_constants.h"
 #include "logmsg.h"
+#include "portmuxusr.h"
 
 enum {
     /* Flags for write_list() */
@@ -147,7 +148,6 @@ struct host_node_tag {
     pthread_t connect_thread_id;
     pthread_t reader_thread_id;
     arch_tid connect_thread_arch_tid;
-    arch_tid reader_thread_arch_tid;
     arch_tid writer_thread_arch_tid;
     write_data *write_head;
     write_data *write_tail;
@@ -222,7 +222,6 @@ typedef struct decom_struct {
 struct netinfo_struct {
     host_node_type *head;
     sanc_node_type *sanctioned_list;
-    int numhosts;
     /*
     upping to 32 to prevents myhostname_other from bleeding into myport on our
     new linux machines.  This change does not affect the wire protocol.
@@ -232,6 +231,7 @@ struct netinfo_struct {
     char myhostname_other[32];
     int myport;
     int myfd;
+    portmux_fd_t *pmuxfd;
     char app[16];
     char service[16];
     char instance[MAX_DBNAME_LENGTH];
@@ -254,8 +254,8 @@ struct netinfo_struct {
     pthread_mutex_t sanclk;
     pthread_mutex_t pmuxlk;
     pthread_t accept_thread_id;
+    pthread_t reader_thread_id;  
     pthread_t heartbeat_send_thread_id;
-    pthread_t heartbeat_check_thread_id;
 
     /* get the archthreads for each */
     arch_tid accept_thread_arch_tid;

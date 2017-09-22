@@ -1759,6 +1759,10 @@ const char *portmux_fds_get_instance(portmux_fd_t *fds)
     return fds->instance;
 }
 
+int portmux_fds_get_fd(portmux_fd_t *fds) { return fds->listenfd; }
+
+int portmux_fds_get_tcpfd(portmux_fd_t *fds) { return fds->tcplistenfd; }
+
 static int get_portmux_port(void)
 {
     return portmux_port;

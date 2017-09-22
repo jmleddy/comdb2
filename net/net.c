@@ -446,8 +446,7 @@ static void shutdown_hostnode_socket(host_node_type *host_node_ptr)
 
 /* This must be called while holding the host_node_ptr->lock.
  *
- * This will call shutdown() on the fd, which will cause the reader & writer
- * threads (if any) to error out of any blocking io and exit.
+ * This will call shutdown() on the fd.
  *
  * If there are no reader or writer threads left then this will properly
  * close the socket and sbuf.
@@ -479,18 +478,14 @@ static void close_hostnode_ll(host_node_type *host_node_ptr)
         sslio_close(sb, 1);
 #endif
 
-    /* If we have an fd or sbuf, and no reader or writer thread, then
-     * close the socket properly */
-    if (host_node_ptr->have_reader_thread == 0) {
-        if (host_node_ptr->sb) {
-            sbuf2close(host_node_ptr->sb);
-            host_node_ptr->sb = NULL;
-            if (gbl_verbose_net)
-                host_node_printf(LOGMSG_DEBUG, host_node_ptr, "closing sbuf\n");
-        }
-
-        host_node_ptr->state_flags |= NET_STATE_REALLY_CLOSED;
+    if (host_node_ptr->sb) {
+        sbuf2close(host_node_ptr->sb);
+        host_node_ptr->sb = NULL;
+        if (gbl_verbose_net)
+            host_node_printf(LOGMSG_DEBUG, host_node_ptr, "closing sbuf\n");
     }
+
+    host_node_ptr->state_flags |= NET_STATE_REALLY_CLOSED;
 }
 
 static void close_hostnode(host_node_type *host_node_ptr)
@@ -555,6 +550,8 @@ static int write_list(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
             /* Try the old way if writev didn't work */
             perror("sendmsg failed in write_list");
         } else {
+            if (debug_switch_verbose_sbuf())
+                logmsg(LOGMSG_USER, "writing, writing %llu\n", gettmms());
             goto out;
         }
     }
@@ -700,7 +697,7 @@ static int read_stream(netinfo_type *netinfo_ptr, host_node_type *host_node_ptr,
     int nread = 0;
     while (nread < maxbytes) {
         if (host_node_ptr) /* not set by all callers */
-            host_node_ptr->timestamp = time(NULL);
+            host_node_ptr->timestamp = time_epoch();
         int n = sbuf2defaultread(sb, ptr + nread, maxbytes - nread);
         if (n > 0) {
             nread += n;
@@ -1242,40 +1239,98 @@ static void re_register_portmux(netinfo_type *netinfo_ptr) {
     pthread_mutex_unlock(&(netinfo_ptr->pmuxlk));
 }
 
+/* poll on every host in this netinfo, return a host_node */
+static int poll_message_header(netinfo_type *netinfo_ptr,
+                               host_node_type **host_node_ptr)
+{
+    host_node_type *tmp_host_ptr;
+    host_node_type *hosts[REPMAX];
+    struct pollfd pfd[REPMAX + 2];
+    int timestamp, numhosts;
+    int i;
+    int rc;
+
+    *host_node_ptr = NULL;
+
+    /* fill the poll array and the pointer to hosts */
+    Pthread_rwlock_rdlock(&(netinfo_ptr->lock));
+    for (tmp_host_ptr = netinfo_ptr->head, i = 0;
+         tmp_host_ptr != NULL;
+         tmp_host_ptr = tmp_host_ptr->next) {
+        if (!(tmp_host_ptr->state_flags &
+              (NET_STATE_DECOM | NET_STATE_CLOSED))) {
+            hosts[i] = tmp_host_ptr;
+            pfd[i].fd = sbuf2fileno(tmp_host_ptr->sb);
+            pfd[i].events = POLLIN;
+            i++;
+        }
+    }
+    numhosts = i;
+    if (netinfo_ptr->pmuxfd) {
+        pfd[i].fd = portmux_fds_get_fd(netinfo_ptr->pmuxfd);
+        pfd[i].events = POLLIN;
+        i++;
+        pfd[i].fd = portmux_fds_get_tcpfd(netinfo_ptr->pmuxfd);
+        pfd[i].events = POLLIN;
+    }        
+    Pthread_rwlock_unlock(&(netinfo_ptr->lock));
+    
+    rc = poll(pfd, numhosts, netinfo_ptr->heartbeat_check_time * 1000);
+    if (rc == 0) {
+        logmsg(LOGMSG_ERROR, "%s: missed heartbeats from all hosts\n",
+               __func__);
+        for (i = 0; i < numhosts; i++) {
+            tmp_host_ptr = hosts[i];
+            close_hostnode(tmp_host_ptr);
+        }
+        return rc;
+    } else if (rc == -1) {
+        logmsgperror(__func__);
+        return rc;
+    }
+
+    timestamp = time_epoch();
+    for (i = 0; i < numhosts; i++) {
+        tmp_host_ptr = hosts[i];
+
+        /* use this hostnode if we have a pollin */
+        if (pfd[i].revents & POLLIN) {
+            if (*host_node_ptr == NULL)
+                *host_node_ptr = tmp_host_ptr;
+        } else if (timestamp - netinfo_ptr->heartbeat_check_time  >
+                   tmp_host_ptr->timestamp) {
+            /* close hosts with missed heartbeats */
+            host_node_printf(LOGMSG_WARN, tmp_host_ptr,
+                             "%s: no data in %d seconds, killing session\n",
+                             __func__, timestamp - tmp_host_ptr->timestamp);
+            close_hostnode(tmp_host_ptr);
+        }
+    }
+    return rc;
+}
+
 static int read_message_header(netinfo_type *netinfo_ptr,
-                               host_node_type *host_node_ptr,
+                               host_node_type **host_node_ptr,
                                wire_header_type **wire_header,
                                char fromhost[256], char tohost[256])
 {
-    int rc;
     uint8_t *p_buf, *p_buf_end;
+    host_node_type *tmp_host_ptr;    
     wire_header_type *tmpheader;
     int namelen;
     int timestamp;
     int node_timestamp;
+    int rc;
+    
+    node_timestamp = time_epoch();
+    rc = poll_message_header(netinfo_ptr, host_node_ptr);
+    if (rc <= 0) return 1;
 
-    node_timestamp = time(NULL);
-    rc = sbuf2pollin(host_node_ptr->sb,
-                     netinfo_ptr->heartbeat_check_time * 1000);
-    if (rc == 0) {
-        timestamp = time(NULL);
-        re_register_portmux(netinfo_ptr);
-
-        if (host_node_ptr->sb && host_node_ptr->running_user_func == 0) {
-                host_node_printf(
-                    LOGMSG_WARN,
-                    host_node_ptr,
-                    "%s: no data in %d seconds, killing session\n",
-                    __func__, timestamp - node_timestamp);
-
-
-                return 1;
-        }
-    }
-    tmpheader = malloc_pt(host_node_ptr->msp, sizeof(wire_header_type));
+    tmp_host_ptr = *host_node_ptr;
+    tmpheader = malloc_pt(tmp_host_ptr->msp, sizeof(wire_header_type));
     *wire_header = tmpheader;
 
-    rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb,
+    rc = read_stream(netinfo_ptr, tmp_host_ptr, tmp_host_ptr->sb,
                      tmpheader, sizeof(*tmpheader));
 
     if (rc != sizeof(wire_header_type))
@@ -1292,7 +1347,7 @@ static int read_message_header(netinfo_type *netinfo_ptr,
         namelen = atoi(&tmpheader->fromhost[1]);
         if (namelen < 1 || namelen > 256)
             return 1;
-        rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb,
+        rc = read_stream(netinfo_ptr, tmp_host_ptr, tmp_host_ptr->sb,
                          fromhost, namelen);
         if (rc != namelen)
             return 1;
@@ -1305,7 +1360,7 @@ static int read_message_header(netinfo_type *netinfo_ptr,
         namelen = atoi(&tmpheader->tohost[1]);
         if (namelen < 1 || namelen > 256)
             return 1;
-        rc = read_stream(netinfo_ptr, host_node_ptr, host_node_ptr->sb, tohost,
+        rc = read_stream(netinfo_ptr, tmp_host_ptr, tmp_host_ptr->sb, tohost,
                          namelen);
         if (rc != namelen)
             return 1;
@@ -1545,7 +1600,7 @@ static seq_data *add_seqnum_to_waitlist(host_node_type *host_node_ptr,
     new_seq_node->next = NULL;
     new_seq_node->payload = NULL;
     new_seq_node->payloadlen = 0;
-    new_seq_node->timestamp = time(NULL);
+    new_seq_node->timestamp = time_epoch();
     /* always add to the end of the list. */
     /* only remove from the beginning, and then,
        only if the "ack" has occurred */
@@ -2490,7 +2545,7 @@ host_node_type *add_to_netinfo(netinfo_type *netinfo_ptr, const char hostname[],
     ptr->hostname_len = strlen(ptr->host) + 1;
     // ptr->addr will be set by connect_thread()
     ptr->port = portnum;
-    ptr->timestamp = time(NULL);
+    ptr->timestamp = time_epoch();
     ptr->wait_list = NULL;
     ptr->distress = 0;
 
@@ -3491,7 +3546,8 @@ static int read_ack_payload(read_data *read_data_ptr)
     netinfo_ptr = host_node_ptr->netinfo_ptr;
     sb = host_node_ptr->sb;
 
-    if ((read_data_ptr->payload = malloc(sizeof(net_ack_message_type))) == NULL)
+    if ((read_data_ptr->payload =
+         malloc_pt(host_node_ptr->msp, sizeof(net_ack_message_type))) == NULL)
         return -1;
 
     rc = read_stream(netinfo_ptr, host_node_ptr, sb,
@@ -3661,7 +3717,6 @@ static int process_user_message(read_data *read_data_ptr)
     if (netinfo_ptr->fake || netinfo_ptr->exiting)
         return 0;
 
-
     usertype = msghdr->usertype;
     seqnum = msghdr->seqnum;
     needack = msghdr->waitforack;
@@ -3707,7 +3762,7 @@ static int process_user_message(read_data *read_data_ptr)
 
             /* update timestamp before checking it */
             Pthread_mutex_lock(&(host_node_ptr->timestamp_lock));
-            host_node_ptr->timestamp = time(NULL);
+            host_node_ptr->timestamp = time_epoch();
             host_node_ptr->running_user_func = 0;
             Pthread_mutex_unlock(&(host_node_ptr->timestamp_lock));
 
@@ -4441,53 +4496,27 @@ static void *reader_thread(void *arg)
 
     thread_started("net reader");
 
-    host_node_ptr = arg;
-    netinfo_ptr = host_node_ptr->netinfo_ptr;
-
-    host_node_ptr->reader_thread_arch_tid = getarchtid();
-    if (gbl_verbose_net)
-        host_node_printf(LOGMSG_DEBUG, host_node_ptr, "%s: starting tid=%d\n", __func__,
-                         host_node_ptr->reader_thread_arch_tid);
+    netinfo_ptr = arg;
 
     if (netinfo_ptr->start_thread_callback)
         netinfo_ptr->start_thread_callback(netinfo_ptr->callback_data);
 
-    while (!netinfo_ptr->exiting && !(host_node_ptr->state_flags &
-                                      (NET_STATE_DECOM | NET_STATE_CLOSED))) {
-        host_node_ptr->timestamp = time(NULL);
-
+    while (!netinfo_ptr->exiting) {
         if (netinfo_ptr->trace && debug_switch_net_verbose())
            logmsg(LOGMSG_USER, "RT: reading header %llu\n", gettmms());
 
-        rc = read_message_header(netinfo_ptr, host_node_ptr, &wire_header,
+        rc = read_message_header(netinfo_ptr, &host_node_ptr, &wire_header,
                                  fromhost, tohost);
-        if (rc != 0) {
-            if (!host_node_ptr->distress) {
-                host_node_printf(LOGMSG_WARN, host_node_ptr,
-                                 "error reading message header\n");
-                host_node_printf(LOGMSG_WARN, host_node_ptr, "entering distress mode\n");
-            }
-            /* if we loop it should be ok; TODO: maybe wanna have
-             * a modulo operation to report errors w/ a certain periodicity? */
-            host_node_ptr->distress++;
-            goto done;
-        } else {
-            if (host_node_ptr->distress) {
-                unsigned cycles = host_node_ptr->distress;
-                host_node_ptr->distress = 0;
-                host_node_printf(LOGMSG_INFO, host_node_ptr,
-                                 "%s: leaving distress mode after %u cycles\n",
-                                 __func__, cycles);
-            }
-        }
+        if (rc != 0) goto error;
 
         /* We received data - update our timestamp.  We used to do this only
          * for heartbeat messages; do this for all types of message. */
         host_node_ptr->timestamp = time_epoch();
 
         if (netinfo_ptr->trace && debug_switch_net_verbose())
-           logmsg(LOGMSG_USER, "RT: got packet type=%d %llu\n", wire_header->type,
-                   gettmms());
+           logmsg(LOGMSG_USER, "RT: got packet type=%d %llu\n",
+                  wire_header->type,
+                  gettmms());
 
         read_data_ptr = malloc_pt(host_node_ptr->msp,
                                   sizeof(*read_data_ptr));
@@ -4510,16 +4539,15 @@ static void *reader_thread(void *arg)
                 logmsg(LOGMSG_ERROR,
                        "reader thread: hello error from host %s\n",
                         host_node_ptr->host);
-                goto done;
             }
             break;
 
         case WIRE_HEADER_DECOM_NAME:
             rc = read_decom_name_payload(read_data_ptr);
             if (rc != 0) {
-                logmsg(LOGMSG_ERROR, "reader thread: decom error from host %s\n",
-                        host_node_ptr->host);
-                goto done;
+                logmsg(LOGMSG_ERROR, "reader thread: decom error from host "
+                       "%s\n",
+                       host_node_ptr->host);
             }
             break;
 
@@ -4529,18 +4557,18 @@ static void *reader_thread(void *arg)
             rc = read_user_payload(read_data_ptr);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR,
-                        "reader thread: process_user_message error from host %s\n",
-                    host_node_ptr->host);
-                goto done;
+                       "reader thread: process_user_message error from host "
+                       "%s\n",
+                       host_node_ptr->host);
             }
             break;
 
         case WIRE_HEADER_ACK_PAYLOAD:
             rc = read_payload_ack_payload(read_data_ptr);
             if (rc != 0) {
-                logmsg(LOGMSG_ERROR, "reader thread: payload ack error from host %s\n",
+                logmsg(LOGMSG_ERROR,
+                       "reader thread: payload ack error from host %s\n",
                         host_node_ptr->host);
-                goto done;
             }
             break;
 
@@ -4549,7 +4577,6 @@ static void *reader_thread(void *arg)
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "reader thread: ack error from host %s\n",
                         host_node_ptr->host);
-                goto done;
             }
             break;
 
@@ -4563,33 +4590,37 @@ static void *reader_thread(void *arg)
            logmsg(LOGMSG_USER, "RT: done reading %d %llu\n", wire_header->type,
                    gettmms());
 
-        if (gbl_net_proc_thread_max) {
-            thdpool_enqueue(net_proc_thdpool, process_read_data,
-                            read_data_ptr, 0, NULL);
-        } else {
-            process_read_data(NULL, read_data_ptr, NULL, 0);
+        /* success */
+        if (rc == 0) {
+            if (gbl_net_proc_thread_max) {
+                thdpool_enqueue(net_proc_thdpool, process_read_data,
+                                read_data_ptr, 0, NULL);
+            } else {
+                process_read_data(NULL, read_data_ptr, NULL, 0);
+            }
+            continue;
         }
-
-
-        if (rc)
-            break;
+        
+error:
+        /* error */
+        if (host_node_ptr) {
+            Pthread_mutex_lock(&(host_node_ptr->lock));
+            if (gbl_verbose_net)
+                host_node_printf(LOGMSG_INFO, host_node_ptr,
+                                 "%s closing all connections\n",
+                                 __func__);
+            /* Check if failure is not during connection setup. */
+            if (((time_epoch() - th_start_time)
+                 > netinfo_ptr->heartbeat_check_time) &&
+                !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
+                /* Close other sockets related to this hostname */
+                shutdown_other_hostnodes(host_node_ptr);
+            }
+            close_hostnode_ll(host_node_ptr);
+            Pthread_mutex_unlock(&(host_node_ptr->lock));
+        }
     }
-
-done:
-
-    Pthread_mutex_lock(&(host_node_ptr->lock));
-    host_node_ptr->have_reader_thread = 0;
-    if (gbl_verbose_net)
-        host_node_printf(LOGMSG_INFO, host_node_ptr, "%s exiting\n", __func__);
-    /* Check if failure is not during connection setup. */
-    if (((time_epoch() - th_start_time) > netinfo_ptr->heartbeat_check_time) &&
-        !(host_node_ptr->state_flags & NET_STATE_CLOSED)) {
-        /* Close other sockets related to this hostname */
-        shutdown_other_hostnodes(host_node_ptr);
-    }
-    close_hostnode_ll(host_node_ptr);
-    Pthread_mutex_unlock(&(host_node_ptr->lock));
-
+    
     if (netinfo_ptr->stop_thread_callback)
         netinfo_ptr->stop_thread_callback(netinfo_ptr->callback_data);
 
@@ -4730,6 +4761,7 @@ static void *connect_thread(void *arg)
 {
     netinfo_type *netinfo_ptr;
     host_node_type *host_node_ptr;
+    int polltm;            
     int fd;
     int rc;
     int flag = 1;
@@ -4857,13 +4889,20 @@ static void *connect_thread(void *arg)
 
         rc = connect(fd, (struct sockaddr *)&sin, sizeof(sin));
         if (rc == -1 && errno == EINPROGRESS) {
+            /* reasonable default for poll */
+            polltm = netinfo_ptr->heartbeat_send_time;
+
+            /* use tuned value if set */
+            if (netinfo_ptr->netpoll > 0) {
+                polltm = netinfo_ptr->netpoll;
+            }
+
             /*wait for connect event */
             pfd.fd = fd;
             pfd.events = POLLOUT;
 
-            /*fprintf(stderr, "sleeping for 100ms\n");*/
-
-            rc = poll(&pfd, 1, netinfo_ptr->heartbeat_check_time);
+            /* poll */
+            rc = poll(&pfd, 1, polltm);
 
             if (rc == 0) {
                 /*timeout*/
@@ -4950,7 +4989,7 @@ static void *connect_thread(void *arg)
         }
 
         /* doesn't matter - it's under lock ... */
-        host_node_ptr->timestamp = time(NULL);
+        host_node_ptr->timestamp = time_epoch();
 
         Pthread_mutex_lock(&(host_node_ptr->enquelk));
 
@@ -4982,13 +5021,13 @@ static void *connect_thread(void *arg)
             host_node_printf(LOGMSG_USER,
                     host_node_ptr, "%s: connection established\n",
                              __func__);
-        host_node_ptr->timestamp = time(NULL);
+        host_node_ptr->timestamp = time_epoch();
 
-        rc = create_reader_threads(host_node_ptr, __func__);
+/*        rc = create_reader_threads(host_node_ptr, __func__);
         if (rc != 0) {
             close_hostnode_ll(host_node_ptr);
             goto again;
-        }
+            }*/
 
 again:
         Pthread_mutex_unlock(&(host_node_ptr->lock));
@@ -5013,10 +5052,8 @@ again:
     close_hostnode(host_node_ptr);
     while (1) {
         int ref;
-        Pthread_mutex_lock(&(host_node_ptr->lock));
-        ref = host_node_ptr->have_reader_thread;
-        Pthread_mutex_unlock(&(host_node_ptr->lock));
 
+        ref = 0;
         Pthread_mutex_lock(&(host_node_ptr->enquelk));
         ref += host_node_ptr->throttle_waiters;
         if (host_node_ptr->throttle_waiters > 0)
@@ -5230,7 +5267,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     host_node_ptr->addr_len = sizeof(addr);
     memset(host_node_ptr->subnet, 0, HOSTNAME_LEN);
 
-    host_node_ptr->timestamp = time(NULL);
+    host_node_ptr->timestamp = time_epoch();
     empty_write_list(host_node_ptr);
     host_node_ptr->sb = sb;
 
@@ -5241,7 +5278,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     host_node_ptr->state_flags &= ~NET_STATE_CLOSED & ~NET_STATE_REALLY_CLOSED;
     host_node_ptr->rej_up_cnt = 0;
 
-    /* create reader & writer threads */
+    /* create reader & writer threads 
     int rc = create_reader_threads(host_node_ptr, __func__);
     if (rc != 0) {
         close_hostnode_ll(host_node_ptr);
@@ -5249,7 +5286,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
         Pthread_rwlock_unlock(&(netinfo_ptr->lock));
         return;
     }
-
+    */
     int become_connect_thread = 0;
 
     /* become the connect thread if we don't have one */
@@ -5267,7 +5304,7 @@ static void accept_handle_new_host(netinfo_type *netinfo_ptr,
     if (host_node_ptr->distress) {
         unsigned cycles = host_node_ptr->distress;
         host_node_ptr->distress = 0;
-        host_node_printf(LOGMSG_INFO, 
+        host_node_printf(LOGMSG_INFO,
                          host_node_ptr,
                          "%s: leaving distress mode after %u cycles\n",
                          __func__, cycles);
@@ -5473,6 +5510,7 @@ static void *accept_thread(void *arg)
         else
             listenfd = netinfo_ptr->myfd = net_listen(netinfo_ptr->myport);
     }
+    netinfo_ptr->pmuxfd = portmux_fds;
 
     netinfo_ptr->accept_thread_created = 1;
     /*fprintf(stderr, "setting netinfo_ptr->accept_thread_created\n");*/
@@ -5592,7 +5630,7 @@ static void *accept_thread(void *arg)
         sbuf2setbufsize(sb, netinfo_ptr->bufsz);
 
         /* reasonable default for poll */
-        polltm = 100;
+        polltm = netinfo_ptr->heartbeat_check_time;
 
         /* use tuned value if set */
         if (netinfo_ptr->netpoll > 0) {
@@ -6056,7 +6094,7 @@ static sanc_node_type *add_to_sanctioned_nolock(netinfo_type *netinfo_ptr,
     ptr->next = netinfo_ptr->sanctioned_list;
     ptr->host = hostname;
     ptr->port = portnum;
-    ptr->timestamp = time(NULL);
+    ptr->timestamp = time_epoch();
 
     netinfo_ptr->sanctioned_list = ptr;
 
@@ -6158,8 +6196,21 @@ int net_init(netinfo_type *netinfo_ptr)
         exit(1);
     }
 
-    /* create threadpool */
-    init_net_proc_threads(netinfo_ptr);
+    /* create threadpool for reader thread*/
+    if (!netinfo_ptr->ischild) init_net_proc_threads(netinfo_ptr);
+
+    /* create reader thread */
+    rc = pthread_create(&(netinfo_ptr->reader_thread_id),
+                        &(netinfo_ptr->pthread_attr_detach),
+                        reader_thread, netinfo_ptr);
+    if (rc != 0) {
+            logmsg(LOGMSG_FATAL, "init_network: couldnt create reader thread - "
+                   "rc=%d, errno=%d %s exiting\n",
+                    rc, errno, strerror(errno));
+            exit(1);
+        exit(1);
+    }
+    
 
     /* XXX just give things a chance to settle down before we return */
     usleep(10000);
@@ -6334,7 +6385,7 @@ static char *net_get_osql_node_ll(netinfo_type *netinfo_ptr,
         /* avoid sending all same sec requests to the same node */
         static int init = 0;
         if (!init) {
-            unsigned int t = time(NULL);
+            unsigned int t = time_epoch();
             index = init = rand_r(&t) % nnodes; /* let it spread */
         } else {
             init = (init + 1) % nnodes; /* round robin */
